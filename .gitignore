@@ -1,0 +1,57 @@
+# 环境变量 (包含账号密码)
+.env
+
+# Python 缓存与环境
+__pycache__/
+*.py[cod]
+.venv/
+.conda/
+.uv/
+
+.venv
+*.pyc
+
+# Node.js 依赖
+node_modules/
+dist/
+
+# Docker 数据卷 (数据太重，且包含本地路径)
+volumes/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+.idea/  # 如果你不希望别人看到你的 PyCharm 配置
+.vscode/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+dist-ssr
+coverage
+*.local
+
+# Editor directories and files
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+*.tsbuildinfo
+
+.eslintcache
+
+# Cypress
+/cypress/videos/
+/cypress/screenshots/
+
+# Vitest
+__screenshots__/
