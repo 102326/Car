@@ -2,6 +2,9 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+
+    APP_NAME: str = "CarFast API"
+
     # === 钉钉配置 ===
     DINGTALK_APPID: str
     DINGTALK_APPSECRET: str

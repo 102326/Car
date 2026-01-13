@@ -64,6 +64,7 @@ class RabbitMQClient:
                     await callback_func(data)
                 except Exception as e:
                     logger.error(f"❌ Consumer Error: {e}")
+                    raise e
 
         await queue.consume(message_wrapper)
         logger.info(f"👂 [RabbitMQ] Listening on {queue_name}")
