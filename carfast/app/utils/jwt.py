@@ -5,10 +5,10 @@ import datetime
 from datetime import timedelta, timezone
 import redis.asyncio as redis
 from typing import Tuple, Optional, Dict, Any
-from fastapi import HTTPException, status
+from fastapi import HTTPException
+from app.config import settings
 
 # 引入你之前建立的配置
-from app.config import settings
 
 # 初始化 Redis 连接池 (建议使用 config 中的 REDIS_URL)
 redis_pool = redis.ConnectionPool.from_url(settings.REDIS_URL, decode_responses=True)

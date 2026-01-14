@@ -4,7 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 # ==========================================
 # 6. 系统配置域 (System Domain)
 # ==========================================
-from carfast.app.models.user import Base, TimestampMixin
+from app.models.user import Base, TimestampMixin
 
 
 class AppVersion(Base, TimestampMixin):

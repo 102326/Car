@@ -3,8 +3,8 @@ import os
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langchain_core.callbacks import StdOutCallbackHandler
-from app.config import settings
 from dotenv import load_dotenv
+from app.config import settings
 
 load_dotenv(override=True)
 

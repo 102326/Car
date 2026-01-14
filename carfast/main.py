@@ -1,14 +1,14 @@
 # carfast/main.py
-import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from tortoise import Tortoise
 
 # 引入配置
 from app.config import settings
 # 引入 MQ 客户端
 from app.core.mq import RabbitMQClient
+# 引入数据库管理
+from app.database import init_db, close_db
 
 
 # ==========================================
@@ -53,26 +53,18 @@ async def lifespan(app: FastAPI):
         log_error("[消息队列] 连接失败！", e)
         print("    提示: 请检查 Docker 是否开启? 端口 5672 是否映射?")
 
-    # 2. 尝试连接 数据库 (PostgreSQL)
+    # 2. 尝试连接 数据库 (PostgreSQL with SQLAlchemy)
     # ------------------------------------------------
     try:
-        print("   ├─ 正在连接数据库 (PostgreSQL)...")
-        # 假设 models 目录可能为空，暂时忽略 models 加载以防报错
-        await Tortoise.init(
-            db_url=settings.DB_URL,
-            modules={"models": ["app.models"]},
-            timezone="Asia/Shanghai"
-        )
-        log_success("[数据库] PostgreSQL 连接就绪")
+        print("   ├─ 正在连接数据库 (PostgreSQL with SQLAlchemy)...")
+        # 初始化数据库表（开发环境，生产环境建议用 Alembic）
+        await init_db()
+        log_success("[数据库] PostgreSQL 连接就绪 (SQLAlchemy)")
 
     except Exception as e:
-        # 忽略 "no models" 这种非致命警告
-        if "no models" in str(e):
-            print(f"\033[33m⚠ [数据库] 警告: app.models 模块中没有发现数据模型 (开发初期可忽略)\033[0m")
-        else:
-            has_critical_error = True
-            log_error("[数据库] 连接失败！", e)
-            print("    提示: 请检查 Docker 是否开启? 端口 5432 是否映射?")
+        has_critical_error = True
+        log_error("[数据库] 连接失败！", e)
+        print("    提示: 请检查 Docker 是否开启? 端口 5432 是否映射?")
 
     # --- 启动结果汇总 ---
     if has_critical_error:
@@ -93,7 +85,7 @@ async def lifespan(app: FastAPI):
         pass
 
     try:
-        await Tortoise.close_connections()
+        await close_db()
         print("   └─ [数据库] 连接已断开")
     except:
         pass
