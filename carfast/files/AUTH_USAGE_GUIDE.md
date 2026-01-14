@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
-from app.database import get_db
+from app.core.database import get_db
 from app.models.user import UserAuth, UserProfile
 from app.utils.security import get_password_hash, check_password_strength
 
@@ -50,23 +50,23 @@ class RegisterRequest(BaseModel):
 
 @router.post("/register")
 async def register(
-    request: RegisterRequest,
-    db: AsyncSession = Depends(get_db)
+        request: RegisterRequest,
+        db: AsyncSession = Depends(get_db)
 ):
     """用户注册"""
-    
+
     # 1. 检查手机号是否已注册
     result = await db.execute(
         select(UserAuth).where(UserAuth.phone == request.phone)
     )
     if result.scalar_one_or_none():
         raise HTTPException(400, "手机号已注册")
-    
+
     # 2. 验证密码强度
     is_valid, error = check_password_strength(request.password)
     if not is_valid:
         raise HTTPException(400, error)
-    
+
     # 3. 创建用户
     user = UserAuth(
         phone=request.phone,
@@ -75,7 +75,7 @@ async def register(
     )
     db.add(user)
     await db.flush()  # 获取 user.id
-    
+
     # 4. 创建用户资料
     profile = UserProfile(
         user_id=user.id,
@@ -83,7 +83,7 @@ async def register(
     )
     db.add(profile)
     await db.commit()
-    
+
     return {
         "user_id": user.id,
         "message": "注册成功"
@@ -542,7 +542,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.database import get_db
+from app.core.database import get_db
 from app.models.user import UserAuth, UserProfile
 from app.utils.deps import (
     get_current_user,

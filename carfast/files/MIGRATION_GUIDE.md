@@ -79,7 +79,7 @@ await Tortoise.generate_schemas()
 #### ✅ 现在 (SQLAlchemy 2.0)
 
 ```python
-from app.database import init_db, close_db
+from app.core.database import init_db, close_db
 
 # 启动时
 await init_db()
@@ -209,12 +209,13 @@ async def get_user(user_id: int):
 ```python
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db
+from app.core.database import get_db
+
 
 @router.get("/users/{user_id}")
 async def get_user(
-    user_id: int,
-    db: AsyncSession = Depends(get_db)
+        user_id: int,
+        db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
         select(UserAuth).where(UserAuth.id == user_id)

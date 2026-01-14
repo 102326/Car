@@ -7,7 +7,7 @@ from sqlalchemy import select, update, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, joinedload
 from fastapi import Depends
-from app.database import get_db
+from app.core.database import get_db
 from app.models.user import UserAuth, UserProfile
 ```
 

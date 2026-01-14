@@ -99,7 +99,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
-from app.database import get_db
+from app.core.database import get_db
 from app.models.user import UserAuth, UserProfile
 from app.utils.deps import get_current_user, get_current_user_with_profile
 from app.utils.jwt import MyJWT
@@ -115,26 +115,26 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 async def login(
-    request: LoginRequest,
-    db: AsyncSession = Depends(get_db)
+        request: LoginRequest,
+        db: AsyncSession = Depends(get_db)
 ):
     """用户登录"""
-    
+
     # 查询用户
     result = await db.execute(
         select(UserAuth).where(UserAuth.phone == request.phone)
     )
     user = result.scalar_one_or_none()
-    
+
     if not user or not verify_password(request.password, user.password_hash):
         raise HTTPException(401, "手机号或密码错误")
-    
+
     if user.status != 1:
         raise HTTPException(403, "账号已被禁用")
-    
+
     # 生成 Token
     access_token, refresh_token = await MyJWT.login_user(user.id)
-    
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -144,7 +144,7 @@ async def login(
 
 @router.get("/me")
 async def get_me(
-    current_user: UserAuth = Depends(get_current_user_with_profile)
+        current_user: UserAuth = Depends(get_current_user_with_profile)
 ):
     """获取当前用户信息"""
     return {
@@ -157,7 +157,7 @@ async def get_me(
 
 @router.post("/logout")
 async def logout(
-    current_user: UserAuth = Depends(get_current_user)
+        current_user: UserAuth = Depends(get_current_user)
 ):
     """用户登出"""
     await MyJWT.logout_user(current_user.id)

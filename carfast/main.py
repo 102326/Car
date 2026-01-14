@@ -8,7 +8,7 @@ from app.config import settings
 # 引入 MQ 客户端
 from app.core.mq import RabbitMQClient
 # 引入数据库管理
-from app.database import init_db, close_db
+from app.core.database import init_db, close_db
 
 
 # ==========================================

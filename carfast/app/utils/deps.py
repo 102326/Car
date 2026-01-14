@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.database import get_db
+from app.core.database import get_db
 from app.utils.jwt import MyJWT
-from app.models.user import UserAuth, UserProfile
+from app.models.user import UserAuth
 
 # ==========================================
 # OAuth2 Token 方案配置
