@@ -125,7 +125,8 @@ python test_sqlalchemy.py
 
 ```python
 from sqlalchemy import select
-from app.database import get_db
+from app.core.database import get_db
+
 
 @router.get("/users")
 async def get_users(db: AsyncSession = Depends(get_db)):

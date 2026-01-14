@@ -21,7 +21,7 @@ body,
 }
 
 /* 重置Vant变量 */
-:root {
+  :root {
   --van-primary-color: #e52e2e;
   --van-text-color: #323233;
   --van-text-color-2: #646566;
