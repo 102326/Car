@@ -1,5 +1,5 @@
 from enum import Enum
-from carfast.app.models.user import TimestampMixin, Base
+from app.models.user import TimestampMixin, Base
 from typing import Optional
 from datetime import datetime
 from sqlalchemy import String, Integer, ForeignKey, DECIMAL, DateTime

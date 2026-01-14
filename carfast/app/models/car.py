@@ -2,7 +2,7 @@ from typing import Optional, List
 from sqlalchemy import String, Integer, ForeignKey, DECIMAL
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from carfast.app.models.user import TimestampMixin, Base
+from app.models.user import TimestampMixin, Base
 
 # ==========================================
 # 2. 车型库核心域 (Car Master Domain)
