@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.views import admin_tool
 from app.core.scheduler import start_scheduler, scheduler
 
+from app.core.es import es_client
 # 引入配置
 from app.config import settings
 # 引入 MQ 客户端
@@ -37,9 +38,13 @@ async def lifespan(app: FastAPI):
     """
     print(f"\n [{settings.APP_NAME}] 系统启动序列开始...")
 
-    has_critical_error = False
+    # 服务状态记录
+    services_status = {
+        "rabbitmq": False,
+        "database": False
+    }
 
-    # 1. 尝试连接 RabbitMQ
+    # 1. 尝试连接 RabbitMQ（非关键服务，失败可降级）
     # ------------------------------------------------
     try:
         print("   ├─ 正在连接消息队列 (RabbitMQ)...")
@@ -47,13 +52,14 @@ async def lifespan(app: FastAPI):
         # 双重检查：确保连接对象真的存在且开启
         if RabbitMQClient.connection and not RabbitMQClient.connection.is_closed:
             log_success("[消息队列] RabbitMQ 连接就绪")
+            services_status["rabbitmq"] = True
         else:
             raise ConnectionError("连接函数未报错，但连接对象未建立 (逻辑异常)")
 
     except Exception as e:
-        has_critical_error = True
-        log_error("[消息队列] 连接失败！", e)
-        print("    提示: 请检查 Docker 是否开启? 端口 5672 是否映射?")
+        log_error("[消息队列] 连接失败（非关键服务，将降级运行）", e)
+        print("    提示: 消息队列功能将不可用，但不影响基础API功能")
+        print("    如需启用: docker run -d -p 5672:5672 rabbitmq:3-management")
 
     # 2. 尝试连接 数据库 (PostgreSQL with SQLAlchemy)
     # ------------------------------------------------
@@ -62,11 +68,15 @@ async def lifespan(app: FastAPI):
         # 初始化数据库表（开发环境，生产环境建议用 Alembic）
         await init_db()
         log_success("[数据库] PostgreSQL 连接就绪 (SQLAlchemy)")
+        services_status["database"] = True
 
     except Exception as e:
-        has_critical_error = True
-        log_error("[数据库] 连接失败！", e)
-        print("    提示: 请检查 Docker 是否开启? 端口 5432 是否映射?")
+        log_error("[数据库] 连接失败（关键服务）", e)
+        print("    提示: 请检查数据库配置:")
+        print(f"    - 当前配置: {settings.DB_URL.split('@')[1] if '@' in settings.DB_URL else 'unknown'}")
+        print("    - 请确认数据库服务已启动且配置正确")
+        print("    - 本地: docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=123456 postgres:15")
+        print("    - 或修改 .env 使用远程数据库")
 
     # 3. 启动定时任务调度器
     # ------------------------------------------------
@@ -79,10 +89,33 @@ async def lifespan(app: FastAPI):
         print("    提示: 定时爬虫可能无法自动运行")
 
     # --- 启动结果汇总 ---
-    if has_critical_error:
-        print("\n\033[1;31m  严重警告: 部分核心服务启动失败，系统可能无法正常工作 \033[0m\n")
+    print("\n" + "=" * 60)
+    print("  服务状态汇总")
+    print("=" * 60)
+    print(f"  {'✅' if services_status['database'] else '❌'} 数据库 (PostgreSQL): {'已连接' if services_status['database'] else '未连接'}")
+    print(f"  {'✅' if services_status['rabbitmq'] else '⚠️'} 消息队列 (RabbitMQ): {'已连接' if services_status['rabbitmq'] else '未连接（降级运行）'}")
+    print("=" * 60)
+
+    if not services_status["database"]:
+        print("\033[1;31m  ⚠️  数据库未连接，大部分 API 将无法使用！\033[0m")
+        print("  请修复数据库连接后重启应用")
+    elif not services_status["rabbitmq"]:
+        print("\033[1;33m  ⚠️  消息队列未连接，异步任务功能不可用\033[0m")
+        print("  基础 API 可以正常使用")
     else:
-        print("\n\033[1;32m  系统启动成功，等待请求中... \033[0m\n")
+        print("\033[1;32m  🎉 所有服务已就绪，系统运行正常！\033[0m")
+
+    print("=" * 60)
+    print()
+    # === 初始化 ES ===
+    try:
+        print("   ├─ 正在连接搜索引擎 (Elasticsearch)...")
+        es_info = await es_client.get_client().info()
+        version = es_info["version"]["number"]
+        log_success(f"[搜索引擎] Elasticsearch 连接就绪 (v{version})")
+        services_status["elasticsearch"] = True
+    except Exception as e:
+        log_error("[搜索引擎] 连接失败（搜索功能将不可用）", e)
 
     yield  # --- 应用运行中 ---
 
@@ -106,6 +139,11 @@ async def lifespan(app: FastAPI):
     try:
         await close_db()
         print("   └─ [数据库] 连接已断开")
+    except:
+        pass
+    try:
+        await es_client.close()
+        print("   └─ [搜索引擎] 连接已断开")
     except:
         pass
 

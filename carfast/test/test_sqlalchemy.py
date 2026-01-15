@@ -4,8 +4,8 @@ SQLAlchemy 迁移测试脚本
 """
 import asyncio
 from sqlalchemy import select
-from app.database import AsyncSessionLocal
-from app.models.user import UserAuth, UserProfile
+from app.core.database import AsyncSessionLocal
+from app.models.user import UserAuth
 from app.models.car import CarBrand
 
 

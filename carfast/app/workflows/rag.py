@@ -3,7 +3,7 @@ from typing import TypedDict
 from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from carfast.app.utils.llm_factory import LLMFactory
+from app.utils.llm_factory import LLMFactory
 # from app.services.vector_db import VectorDBService # 新项目需要把向量库服务也搬过来
 
 class RAGState(TypedDict):
