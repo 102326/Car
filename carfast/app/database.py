@@ -15,7 +15,7 @@ from app.config import settings
 # ==========================================
 engine = create_async_engine(
     settings.DB_URL,
-    echo=True,  # 开发环境可设为 True 查看 SQL
+    echo=False,  # 开发环境可设为 True 查看 SQL
     future=True,
     pool_pre_ping=True,  # 自动检测断开的连接
     poolclass=NullPool,  # 或使用默认连接池

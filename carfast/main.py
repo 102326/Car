@@ -2,6 +2,8 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.views import admin_tool
+from app.core.scheduler import start_scheduler, scheduler
 
 # 引入配置
 from app.config import settings
@@ -66,6 +68,16 @@ async def lifespan(app: FastAPI):
         log_error("[数据库] 连接失败！", e)
         print("    提示: 请检查 Docker 是否开启? 端口 5432 是否映射?")
 
+    # 3. 启动定时任务调度器
+    # ------------------------------------------------
+    try:
+        print("   ├─ 正在启动定时任务调度器 (APScheduler)...")
+        start_scheduler()
+        log_success("[调度器] 定时任务已启动")
+    except Exception as e:
+        # 调度器失败不算致命错误，不阻断系统启动
+        print("    提示: 定时爬虫可能无法自动运行")
+
     # --- 启动结果汇总 ---
     if has_critical_error:
         print("\n\033[1;31m  严重警告: 部分核心服务启动失败，系统可能无法正常工作 \033[0m\n")
@@ -77,6 +89,13 @@ async def lifespan(app: FastAPI):
     # 3. 关闭资源
     # ------------------------------------------------
     print(f"\n [{settings.APP_NAME}] 系统正在关闭...")
+
+    try:
+        if scheduler.running:
+            scheduler.shutdown()
+            print("   └─ [调度器] 已停止")
+    except:
+        pass
 
     try:
         await RabbitMQClient.close()
@@ -109,6 +128,10 @@ app.add_middleware(
 )
 
 
+app.include_router(admin_tool.admin_router)
 @app.get("/")
 async def root():
     return {"status": "running", "message": "CarFast API Backend"}
+
+
+

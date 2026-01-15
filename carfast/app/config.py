@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # === 4. 消息队列 (RabbitMQ) ===
     # 这里的默认值改为 user:password，这是 Docker 启动 RabbitMQ 的默认账号密码
-    RABBITMQ_URL: str = "amqp://user:password@127.0.0.1:5672/"
+    RABBITMQ_URL: str = "amqp://admin:123@127.0.0.1:5672/"
 
     # === Celery 配置 (任务队列) ===
     # [架构升级] 建议将 Broker 改为 RabbitMQ，Result Backend 保持 Redis
