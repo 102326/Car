@@ -2,7 +2,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from app.core.es import es_client
 # 引入配置
 from app.config import settings
 # 引入 MQ 客户端
@@ -94,6 +94,15 @@ async def lifespan(app: FastAPI):
     
     print("=" * 60)
     print()
+    # === 初始化 ES ===
+    try:
+        print("   ├─ 正在连接搜索引擎 (Elasticsearch)...")
+        es_info = await es_client.get_client().info()
+        version = es_info["version"]["number"]
+        log_success(f"[搜索引擎] Elasticsearch 连接就绪 (v{version})")
+        services_status["elasticsearch"] = True
+    except Exception as e:
+        log_error("[搜索引擎] 连接失败（搜索功能将不可用）", e)
 
     yield  # --- 应用运行中 ---
 
@@ -110,6 +119,11 @@ async def lifespan(app: FastAPI):
     try:
         await close_db()
         print("   └─ [数据库] 连接已断开")
+    except:
+        pass
+    try:
+        await es_client.close()
+        print("   └─ [搜索引擎] 连接已断开")
     except:
         pass
 
