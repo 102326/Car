@@ -31,8 +31,20 @@ class RabbitMQClient:
 
     @classmethod
     async def close(cls):
-        if cls.connection:
-            await cls.connection.close()
+        """安全关闭 RabbitMQ 连接"""
+        try:
+            if cls.channel and not cls.channel.is_closed:
+                await cls.channel.close()
+                cls.channel = None
+        except Exception as e:
+            logger.warning(f"⚠️ [RabbitMQ] Channel close warning: {e}")
+        
+        try:
+            if cls.connection and not cls.connection.is_closed:
+                await cls.connection.close()
+                cls.connection = None
+        except Exception as e:
+            logger.warning(f"⚠️ [RabbitMQ] Connection close warning: {e}")
 
     @classmethod
     async def publish(cls, routing_key: str, message: dict):

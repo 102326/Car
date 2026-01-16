@@ -7,17 +7,17 @@ class Settings(BaseSettings):
     APP_NAME: str = "CarFast API"
 
     # === 钉钉配置 ===
-    DINGTALK_APPID: str
-    DINGTALK_APPSECRET: str
+    DINGTALK_APPID: str = ""
+    DINGTALK_APPSECRET: str = ""
 
     # === JWT 配置 ===
-    SECRET_KEY: str
+    SECRET_KEY: str = "default-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
 
     # === 1. 关系型数据库 (PostgreSQL) ===
     REDIS_URL: str = "redis://127.0.0.1:6379/0"
-    DB_URL: str
+    DB_URL: str = "postgresql+asyncpg://postgres:123456@localhost:5432/car"
     
     @field_validator('DB_URL')
     def validate_db_url(cls, v: str) -> str:
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     # === 2. [新增] 文档数据库 (MongoDB) ===
     # 用于存储聊天记录、系统日志
-    MONGO_URL: str = "mongodb://47.94.10.217:27017"
+    MONGO_URL: str = "mongodb://localhost:27017"
     MONGO_DB_NAME: str = "pylab_chat_db"
 
     # === 3. [新增] 向量数据库 (Milvus) ===
@@ -62,19 +62,19 @@ class Settings(BaseSettings):
 
     # === 4. 消息队列 (RabbitMQ) ===
     # 这里的默认值改为 user:password，这是 Docker 启动 RabbitMQ 的默认账号密码
-    RABBITMQ_URL: str = "amqp://user:password@127.0.0.1:5672/"
+    RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
 
     # === Celery 配置 (任务队列) ===
     # [架构升级] 建议将 Broker 改为 RabbitMQ，Result Backend 保持 Redis
     # 如果你想暂时保持 Redis 做 Broker，可以不改这里，但为了可靠性建议切换
-    CELERY_BROKER_URL: str = "amqp://user:password@127.0.0.1:5672/"
-    CELERY_RESULT_BACKEND: str = "redis://127.0.0.1:6379/2"
+    CELERY_BROKER_URL: str = "amqp://guest:guest@localhost:5672/"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
     # === 七牛云配置 (保持原样) ===
-    QINIU_ACCESS_KEY: str
-    QINIU_SECRET_KEY: str
-    QINIU_BUCKET_NAME: str
-    QINIU_DOMAIN: str
+    QINIU_ACCESS_KEY: str = ""
+    QINIU_SECRET_KEY: str = ""
+    QINIU_BUCKET_NAME: str = ""
+    QINIU_DOMAIN: str = ""
 
     # === 百度云 OCR ===
     BAIDU_APP_ID: str = ""

@@ -18,7 +18,7 @@ from app.models.Content_Resource import UsedCarListing, CMSPost
 # =========================================================================
 # 2. 配置数据库连接
 # =========================================================================
-DATABASE_URL = "postgresql+asyncpg://postgres:123456@47.94.10.217/car"
+DATABASE_URL = "postgresql+asyncpg://postgres:gyjcxwxb@47.94.10.217/car"
 
 engine = create_async_engine(
     DATABASE_URL,

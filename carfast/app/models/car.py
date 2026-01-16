@@ -15,6 +15,7 @@ class CarBrand(Base, TimestampMixin):
     功能: 品牌列表 (如: 奥迪, 比亚迪)
     """
     __tablename__ = "car_brand"
+    __table_args__ = {"schema": "car"}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(50), index=True, comment="品牌中文名")
@@ -27,16 +28,16 @@ class CarBrand(Base, TimestampMixin):
 
     series: Mapped[List["CarSeries"]] = relationship("CarSeries", back_populates="brand")
 
-
 class CarSeries(Base, TimestampMixin):
     """
     表名: car_series
     功能: 车系 (如: 奥迪A4L, 秦PLUS)
     """
     __tablename__ = "car_series"
+    __table_args__ = {"schema": "car"}
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    brand_id: Mapped[int] = mapped_column(ForeignKey("car_brand.id"), index=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey("public.car_brand.id"), index=True)
 
     name: Mapped[str] = mapped_column(String(50), comment="车系名称")
     level: Mapped[str] = mapped_column(String(20), comment="级别(紧凑型SUV/中型车)")
@@ -57,9 +58,10 @@ class CarModel(Base, TimestampMixin):
     注意: 复杂的 spec_config 存 Mongo，此处保留核心交易字段
     """
     __tablename__ = "car_model"
+    __table_args__ = {"schema": "car"}
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    series_id: Mapped[int] = mapped_column(ForeignKey("car_series.id"), index=True)
+    series_id: Mapped[int] = mapped_column(ForeignKey("public.car_series.id"), index=True)
 
     name: Mapped[str] = mapped_column(String(100), comment="款型名称")
     year: Mapped[str] = mapped_column(String(4), comment="年款(2025/2026)")
@@ -80,6 +82,7 @@ class CarDealer(Base, TimestampMixin):
     功能: 线下经销商信息
     """
     __tablename__ = "car_dealer"
+    __table_args__ = {"schema": "car"}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), comment="经销商全称")
