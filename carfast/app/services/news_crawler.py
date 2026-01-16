@@ -107,7 +107,7 @@ class AutoNewsCrawler:
         # 2. 尝试抓取 "最新" 频道的第 2-20 页
         # 经过验证，"全部"频道的规则通常是: https://www.autohome.com.cn/all/2/
         # 注意：末尾的斜杠很重要
-        for page in range(500, 1001):
+        for page in range(2, 21):
             # 这种格式通常更稳定: /all/页码/
             url = f"https://www.autohome.com.cn/all/{page}/"
             target_urls.append((f"最新-P{page}", url))

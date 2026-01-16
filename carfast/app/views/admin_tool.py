@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from app.services.news_crawler import AutoNewsCrawler
 from app.models.Content_Resource import CMSPost, PostType
-from app.database import get_db, AsyncSessionLocal
+from app.core.database import get_db, AsyncSessionLocal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import UserAuth

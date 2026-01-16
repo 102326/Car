@@ -2,8 +2,8 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator
 
-class Settings(BaseSettings):
 
+class Settings(BaseSettings):
     APP_NAME: str = "CarFast API"
 
     # === 钉钉配置 ===
@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # === 1. 关系型数据库 (PostgreSQL) ===
     REDIS_URL: str = "redis://127.0.0.1:6379/0"
     DB_URL: str
-    
+
     @field_validator('DB_URL')
     def validate_db_url(cls, v: str) -> str:
         """
@@ -93,5 +93,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore"
     )
+
 
 settings = Settings()

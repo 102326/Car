@@ -11,7 +11,7 @@ from app.config import settings
 # 引入 MQ 客户端
 from app.core.mq import RabbitMQClient
 # 引入数据库管理
-from app.database import init_db, close_db
+from app.core.database import init_db, close_db
 
 
 # ==========================================
@@ -92,8 +92,10 @@ async def lifespan(app: FastAPI):
     print("\n" + "=" * 60)
     print("  服务状态汇总")
     print("=" * 60)
-    print(f"  {'✅' if services_status['database'] else '❌'} 数据库 (PostgreSQL): {'已连接' if services_status['database'] else '未连接'}")
-    print(f"  {'✅' if services_status['rabbitmq'] else '⚠️'} 消息队列 (RabbitMQ): {'已连接' if services_status['rabbitmq'] else '未连接（降级运行）'}")
+    print(
+        f"  {'✅' if services_status['database'] else '❌'} 数据库 (PostgreSQL): {'已连接' if services_status['database'] else '未连接'}")
+    print(
+        f"  {'✅' if services_status['rabbitmq'] else '⚠️'} 消息队列 (RabbitMQ): {'已连接' if services_status['rabbitmq'] else '未连接（降级运行）'}")
     print("=" * 60)
 
     if not services_status["database"]:
@@ -165,11 +167,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 app.include_router(admin_tool.admin_router)
+
+
 @app.get("/")
 async def root():
     return {"status": "running", "message": "CarFast API Backend"}
-
-
-
