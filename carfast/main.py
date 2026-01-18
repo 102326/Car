@@ -5,12 +5,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # 引入配置
 from app.config import settings
+# 引入日志配置
+from app.core.logging_config import setup_logging
 # 引入统一连接管理器
 from app.core.connections import connection_manager
 # 引入数据库管理（SQLAlchemy - 保持依赖注入）
 from app.core.database import init_db, close_db
 from app.views.car_view import router as car_router
 from app.views.agent_view import router as agent_router
+
+# ==========================================
+# 🔧 初始化日志系统（应用启动前）
+# ==========================================
+setup_logging("INFO")  # 可以通过环境变量配置
 
 # ==========================================
 # 🛠 辅助函数：打印带颜色的日志

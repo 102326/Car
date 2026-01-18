@@ -18,20 +18,27 @@ class MongoConfigService:
     集合: car_detailed_config (车型详细配置)
     """
 
-    _client: Optional[AsyncIOMotorClient] = None
-    _db = None
-
     @classmethod
     def get_db(cls):
-        """获取 MongoDB 数据库连接"""
-        if cls._client is None:
-            cls._client = AsyncIOMotorClient(
+        """
+        获取 MongoDB 数据库连接
+
+        优先使用 connection_manager（FastAPI 环境）
+        如果不可用，则创建独立连接（命令行环境）
+        """
+        try:
+            # 优先使用全局连接管理器
+            from app.core.connections import connection_manager
+            mongo_db = connection_manager.get_mongo_db()
+            return mongo_db
+        except RuntimeError:
+            # 降级：创建独立连接（命令行模式）
+            logger.warning("[MongoDB] 使用独立连接（非 FastAPI 环境）")
+            client = AsyncIOMotorClient(
                 settings.MONGO_URL,
                 serverSelectionTimeoutMS=5000
             )
-            cls._db = cls._client[settings.MONGO_DB_NAME]
-
-        return cls._db
+            return client[settings.MONGO_DB_NAME]
 
     @classmethod
     async def query_car_config(

@@ -244,6 +244,14 @@ class QueryParser:
         Returns:
             HybridSearchQuery
         """
+        from app.core.logging_config import StructuredLogger
+        import time
+        
+        start_time = time.time()
+        logger_struct = StructuredLogger("search.query_parser")
+        
+        logger_struct.log_event("query_parse_start", {"query": user_query[:100]})
+        
         try:
             # 使用"大脑"模型进行查询解析（复杂推理任务）
             llm = ModelFactory.get_brain_model(temperature=0.1)
@@ -253,8 +261,9 @@ class QueryParser:
             
             result = await chain.ainvoke({"user_query": user_query})
             
-            # 解析 JSON
-            parsed = json.loads(result)
+            # 解析 JSON（处理 Markdown 代码块）
+            from app.utils.json_extractor import safe_json_loads
+            parsed = safe_json_loads(result)
             
             # 构造 Pydantic 模型
             es_filter = ESFilter(**parsed.get("es_filter", {}))
@@ -265,15 +274,32 @@ class QueryParser:
                 original_query=parsed.get("original_query", user_query)
             )
             
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            
             logger.info(f"[QueryParser] 解析成功:")
             logger.info(f"  - ES Filter: {es_filter.dict(exclude_none=True)}")
             logger.info(f"  - Vector Query: {hybrid_query.vector_query}")
             
+            # 记录解析结果
+            logger_struct.log_event("query_parse_complete", {
+                "es_filter": es_filter.dict(exclude_none=True),
+                "vector_query": hybrid_query.vector_query,
+                "elapsed_ms": elapsed_ms
+            })
+            
             return hybrid_query
             
         except json.JSONDecodeError as e:
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            
             logger.error(f"[QueryParser] JSON 解析失败: {e}")
             logger.error(f"LLM 输出: {result}")
+            
+            logger_struct.log_event("query_parse_failed", {
+                "error": "JSON解析失败",
+                "fallback": "simple_parse",
+                "elapsed_ms": elapsed_ms
+            }, level="ERROR")
             
             # 降级：使用简单解析
             return QueryParser._fallback_parse(user_query)

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.car import CarDealer
 from app.models.trade import TradeOrder
-from app.core.database import get_async_session
+from app.core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,8 @@ class TradeService:
             经销商列表
         """
         try:
-            async for session in get_async_session():
+            # 正确用法：直接创建会话
+            async with AsyncSessionLocal() as session:
                 stmt = select(CarDealer)
                 
                 # 城市过滤
@@ -200,7 +201,8 @@ class TradeService:
             }
         
         try:
-            async for session in get_async_session():
+            # 正确用法：直接创建会话
+            async with AsyncSessionLocal() as session:
                 stmt = select(TradeOrder).where(
                     TradeOrder.user_id == user_id
                 ).order_by(TradeOrder.created_at.desc()).limit(10)

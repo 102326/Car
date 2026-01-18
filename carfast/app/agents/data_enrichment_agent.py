@@ -7,9 +7,8 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.car import CarBrand, CarSeries, CarModel
-from app.core.database import get_async_session
-from app.agents.prompts import DATA_ENRICHMENT_AGENT_PROMPT
+from app.models.car import CarSeries, CarModel
+from app.core.database import AsyncSessionLocal
 
 
 class DataEnrichmentAgent:
@@ -128,43 +127,41 @@ class DataEnrichmentAgent:
     ) -> Dict[str, Any]:
         """查询价格信息"""
         try:
+            # 正确用法：直接创建会话（如果未传入）
             if db is None:
-                async for session in get_async_session():
-                    db = session
-                    break
-            
-            # 查询车系
-            stmt = select(CarSeries).where(CarSeries.name.like(f"%{car_series_name}%"))
-            result = await db.execute(stmt)
-            car_series = result.scalar_one_or_none()
-            
-            if not car_series:
-                return {
-                    "success": False,
-                    "data": {},
-                    "message": f"未找到车系: {car_series_name}",
-                    "update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-            
-            # 查询该车系下的所有车型
-            stmt = select(CarModel).where(
-                CarModel.series_id == car_series.id,
-                CarModel.status == 1  # 在售
-            )
-            result = await db.execute(stmt)
-            models = result.scalars().all()
-            
-            # 构造返回数据
-            models_data = [
-                {
-                    "name": model.name,
-                    "price_guidance": float(model.price_guidance),
-                    "year": model.year,
-                    "status": "在售" if model.status == 1 else "停售",
-                    "extra_tags": model.extra_tags or {}
-                }
-                for model in models
-            ]
+                async with AsyncSessionLocal() as session:
+                    # 查询车系
+                    stmt = select(CarSeries).where(CarSeries.name.like(f"%{car_series_name}%"))
+                    result = await session.execute(stmt)
+                    car_series = result.scalar_one_or_none()
+                    
+                    if not car_series:
+                        return {
+                            "success": False,
+                            "data": {},
+                            "message": f"未找到车系: {car_series_name}",
+                            "update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                    
+                    # 查询该车系下的所有车型
+                    stmt = select(CarModel).where(
+                        CarModel.series_id == car_series.id,
+                        CarModel.status == 1  # 在售
+                    )
+                    result = await session.execute(stmt)
+                    models = result.scalars().all()
+                    
+                    # 构造返回数据
+                    models_data = [
+                        {
+                            "name": model.name,
+                            "price_guidance": float(model.price_guidance),
+                            "year": model.year,
+                            "status": "在售" if model.status == 1 else "停售",
+                            "extra_tags": model.extra_tags or {}
+                        }
+                        for model in models
+                    ]
             
             return {
                 "success": True,

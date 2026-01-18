@@ -29,6 +29,12 @@ async def intent_router_node(state: AgentState) -> Dict[str, Any]:
     返回:
         next_step: "rag" | "enrichment" | "trade" | "chat" | "end"
     """
+    from app.core.logging_config import StructuredLogger, log_performance
+    import time
+    
+    start_time = time.time()
+    logger_struct = StructuredLogger("agent.intent_router")
+    
     messages = state["messages"]
     user_profile = state.get("user_profile", {})
     
@@ -38,6 +44,11 @@ async def intent_router_node(state: AgentState) -> Dict[str, Any]:
         if isinstance(msg, HumanMessage):
             user_message = msg.content
             break
+    
+    logger_struct.log_event("intent_analysis_start", {
+        "user_message": user_message[:100],  # 截取前100字符
+        "user_profile": user_profile
+    })
     
     # 获取最近3轮对话历史
     recent_history = messages[-6:] if len(messages) >= 6 else messages
@@ -59,28 +70,50 @@ async def intent_router_node(state: AgentState) -> Dict[str, Any]:
             "recent_history": history_text
         })
         
-        # 解析JSON结果
-        intent_data = json.loads(result)
+        # 解析JSON结果（处理 Markdown 代码块）
+        from app.utils.json_extractor import safe_json_loads
+        intent_data = safe_json_loads(result, default={"intent": "rag", "confidence": 0.5, "reasoning": "JSON解析失败，使用默认路由"})
         next_step = intent_data.get("intent", "rag")
         
         # 更新用户画像（如果提取到新实体）
         extracted_entities = intent_data.get("extracted_entities", {})
         updated_profile = _update_user_profile(user_profile, extracted_entities)
         
-        print(f"[Intent Router] 识别意图: {next_step}, 置信度: {intent_data.get('confidence', 0)}")
-        print(f"[Intent Router] 推理: {intent_data.get('reasoning', '')}")
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        
+        logger.info(f"[Intent Router] 识别意图: {next_step}, 置信度: {intent_data.get('confidence', 0)}")
+        logger.info(f"[Intent Router] 推理: {intent_data.get('reasoning', '')}")
+        
+        # 记录结构化日志
+        logger_struct.log_event("intent_analysis_complete", {
+            "next_step": next_step,
+            "confidence": intent_data.get("confidence", 0),
+            "reasoning": intent_data.get("reasoning", ""),
+            "extracted_entities": extracted_entities,
+            "elapsed_ms": elapsed_ms
+        })
         
         return {
             "next_step": next_step,
             "user_profile": updated_profile,
             "metadata": {
                 "intent_confidence": intent_data.get("confidence", 0),
-                "intent_reasoning": intent_data.get("reasoning", "")
+                "intent_reasoning": intent_data.get("reasoning", ""),
+                "elapsed_ms": elapsed_ms
             }
         }
         
     except Exception as e:
-        print(f"[Intent Router] 解析失败，默认路由到RAG: {e}")
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        
+        logger.error(f"[Intent Router] 解析失败，默认路由到RAG: {e}")
+        
+        logger_struct.log_event("intent_analysis_failed", {
+            "error": str(e),
+            "fallback_step": "rag",
+            "elapsed_ms": elapsed_ms
+        }, level="ERROR")
+        
         return {"next_step": "rag"}
 
 
@@ -91,6 +124,12 @@ async def rag_node(state: AgentState) -> Dict[str, Any]:
     """
     调用混合检索（ES + Milvus），生成基于Context的回答
     """
+    from app.core.logging_config import StructuredLogger
+    import time
+    
+    start_time = time.time()
+    logger_struct = StructuredLogger("agent.rag")
+    
     messages = state["messages"]
     user_profile = state.get("user_profile", {})
     
@@ -127,6 +166,14 @@ async def rag_node(state: AgentState) -> Dict[str, Any]:
             context = "\n".join(context_parts)
             
             logger.info(f"[RAG Node] 混合检索找到 {len(search_results)} 条结果")
+            
+            # 记录检索日志
+            logger_struct.log_search(
+                search_type="hybrid",
+                query=user_question[:100],
+                results_count=len(search_results),
+                elapsed_ms=int((time.time() - start_time) * 1000)
+            )
         else:
             # 检索为空，使用模拟数据
             logger.warning(f"[RAG Node] 混合检索无结果，使用模拟数据")
@@ -157,12 +204,22 @@ async def rag_node(state: AgentState) -> Dict[str, Any]:
         "preferences": json.dumps(user_profile.get("preferences", {}), ensure_ascii=False)
     })
     
-    print(f"[RAG Node] 生成回答长度: {len(answer)} 字符")
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    
+    logger.info(f"[RAG Node] 生成回答长度: {len(answer)} 字符")
+    
+    # 记录 RAG 完成日志
+    logger_struct.log_event("rag_complete", {
+        "answer_length": len(answer),
+        "context_length": len(context),
+        "elapsed_ms": elapsed_ms
+    })
     
     return {
         "rag_context": context,
         "final_answer": answer,
-        "next_step": "end"
+        "next_step": "end",
+        "metadata": {"elapsed_ms": elapsed_ms}
     }
 
 

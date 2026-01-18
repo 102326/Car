@@ -139,6 +139,16 @@ class SmartCarConciergeAgent:
                 "metadata": "调试信息"
             }
         """
+        from app.core.logging_config import StructuredLogger
+        import time
+        
+        start_time = time.time()
+        logger_struct = StructuredLogger("agent.main")
+        
+        logger_struct.log_event("chat_start", {
+            "user_input": user_input[:100],
+            "has_session": session_state is not None
+        })
         # ==========================================
         # 初始化状态
         # ==========================================
@@ -180,6 +190,16 @@ class SmartCarConciergeAgent:
             # 将AI回复添加到消息历史
             final_state["messages"].append(AIMessage(content=answer))
             
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            
+            # 记录完成日志
+            logger_struct.log_event("chat_complete", {
+                "answer_length": len(answer),
+                "elapsed_ms": elapsed_ms,
+                "next_step": final_state.get("next_step"),
+                "user_profile": final_state.get("user_profile")
+            })
+            
             # 返回结果
             return {
                 "answer": answer,
@@ -187,11 +207,19 @@ class SmartCarConciergeAgent:
                 "metadata": {
                     "user_profile": final_state.get("user_profile"),
                     "intent": final_state.get("metadata", {}).get("intent_reasoning"),
-                    "rag_context_length": len(final_state.get("rag_context", ""))
+                    "rag_context_length": len(final_state.get("rag_context", "")),
+                    "elapsed_ms": elapsed_ms
                 }
             }
             
         except Exception as e:
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            
+            logger_struct.log_event("chat_error", {
+                "error": str(e),
+                "elapsed_ms": elapsed_ms
+            }, level="ERROR")
+            
             print(f"[SmartCarConcierge] 执行异常: {e}")
             import traceback
             traceback.print_exc()
@@ -199,7 +227,7 @@ class SmartCarConciergeAgent:
             return {
                 "answer": "抱歉，系统出现了一点问题，请稍后再试或联系客服。",
                 "state": initial_state,
-                "metadata": {"error": str(e)}
+                "metadata": {"error": str(e), "elapsed_ms": elapsed_ms}
             }
     
     async def stream_chat(self, user_input: str, session_state: dict = None):

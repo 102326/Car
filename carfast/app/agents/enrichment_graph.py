@@ -3,17 +3,14 @@
 数据补充 Agent 的 LangGraph 工作流
 """
 from typing import TypedDict, Dict, Any, Optional, Literal
-from typing_extensions import Annotated
 from datetime import datetime
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
-
+from app.core.database import AsyncSessionLocal
 from app.models.car import CarBrand, CarSeries, CarModel
-from app.core.database import get_async_session
 from app.agents.tools.web_scraper import fetch_autohome_data, search_car_info
-from app.utils.model_factory import ModelFactory, ModelType
+from app.utils.model_factory import ModelFactory
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
@@ -138,12 +135,24 @@ DATA_EXTRACTION_PROMPT = """
 # ==========================================
 # Graph Nodes
 # ==========================================
+
 async def check_db_node(state: EnrichmentState) -> Dict[str, Any]:
     """
     节点1: 检查数据库是否已有数据
     """
+    from app.core.logging_config import StructuredLogger
+    import time
+    
+    start_time = time.time()
+    logger_struct = StructuredLogger("agent.enrichment.check_db")
+    
     car_series_name = state["car_series_name"]
     force_refresh = state.get("force_refresh", False)
+    
+    logger_struct.log_event("check_db_start", {
+        "car_series_name": car_series_name,
+        "force_refresh": force_refresh
+    })
     
     print(f"\n[CheckDB] 检查数据库: {car_series_name}")
     
@@ -157,8 +166,8 @@ async def check_db_node(state: EnrichmentState) -> Dict[str, Any]:
         }
     
     try:
-        # 查询数据库
-        async for session in get_async_session():
+        # 查询数据库（正确用法：直接创建会话）
+        async with AsyncSessionLocal() as session:
             stmt = select(CarSeries).where(CarSeries.name.like(f"%{car_series_name}%"))
             result = await session.execute(stmt)
             car_series = result.scalar_one_or_none()
@@ -196,20 +205,34 @@ async def check_db_node(state: EnrichmentState) -> Dict[str, Any]:
                     ]
                 }
                 
+                elapsed_ms = int((time.time() - start_time) * 1000)
+                
                 print(f"[CheckDB] ✅ 数据库已有数据，找到 {len(models)} 个车型")
+                
+                logger_struct.log_event("check_db_found", {
+                    "models_count": len(models),
+                    "elapsed_ms": elapsed_ms
+                })
                 
                 return {
                     "db_exists": True,
                     "db_data": db_data,
                     "source": "db",
-                    "metadata": {"db_check": "found", "models_count": len(models)}
+                    "metadata": {"db_check": "found", "models_count": len(models), "elapsed_ms": elapsed_ms}
                 }
             else:
+                elapsed_ms = int((time.time() - start_time) * 1000)
+                
                 print(f"[CheckDB] ❌ 数据库无数据")
+                
+                logger_struct.log_event("check_db_not_found", {
+                    "elapsed_ms": elapsed_ms
+                })
+                
                 return {
                     "db_exists": False,
                     "db_data": None,
-                    "metadata": {"db_check": "not_found"}
+                    "metadata": {"db_check": "not_found", "elapsed_ms": elapsed_ms}
                 }
             
     except Exception as e:
@@ -351,8 +374,10 @@ async def save_to_db_node(state: EnrichmentState) -> Dict[str, Any]:
     print(f"\n[SaveToDB] 保存数据到数据库")
     
     try:
-        async for session in get_async_session():
-            # 1. 保存品牌
+        # 保存数据到数据库（正确用法：直接创建会话）
+        async with AsyncSessionLocal() as session:
+            try:
+                # 1. 保存品牌
             brand_data = parsed_data.get("brand", {})
             brand_name = brand_data.get("name")
             
@@ -449,20 +474,38 @@ async def save_to_db_node(state: EnrichmentState) -> Dict[str, Any]:
             print(f"  - 车系: {series_name}")
             print(f"  - 新增车型: {len(saved_models)} 个")
             
-            return {
-                "success": True,
-                "message": f"成功保存 {len(saved_models)} 个车型",
-                "source": "web",
-                "final_data": {
-                    "brand": {"id": brand.id, "name": brand.name},
-                    "series": {"id": series.id, "name": series.name},
+            # 记录数据库操作日志
+            from app.core.logging_config import StructuredLogger
+            logger_db = StructuredLogger("agent.enrichment.save_db")
+            logger_db.log_db_operation(
+                operation="insert",
+                table="car_series, car_model",
+                success=True,
+                elapsed_ms=0,
+                details={
+                    "brand": brand_name,
+                    "series": series_name,
                     "models_count": len(saved_models)
-                },
-                "metadata": {
-                    "saved_models": saved_models,
-                    "save_time": datetime.now().isoformat()
                 }
-            }
+            )
+            
+                return {
+                    "success": True,
+                    "message": f"成功保存 {len(saved_models)} 个车型",
+                    "source": "web",
+                    "final_data": {
+                        "brand": {"id": brand.id, "name": brand.name},
+                        "series": {"id": series.id, "name": series.name},
+                        "models_count": len(saved_models)
+                    },
+                    "metadata": {
+                        "saved_models": saved_models,
+                        "save_time": datetime.now().isoformat()
+                    }
+                }
+            except Exception as e:
+                await session.rollback()
+                raise
             
     except Exception as e:
         print(f"[SaveToDB] 保存失败: {e}")

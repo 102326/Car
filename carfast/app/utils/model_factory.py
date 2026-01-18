@@ -64,7 +64,7 @@ class ModelFactory:
     def get_llm(
         model_type: ModelType = ModelType.BRAIN,
         temperature: Optional[float] = None,
-        verbose: bool = False
+        verbose: bool = True  # 改为默认开启，便于日志记录
     ) -> ChatOllama:
         """
         根据模型类型获取 LLM
