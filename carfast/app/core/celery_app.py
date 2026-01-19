@@ -39,4 +39,4 @@ celery_app.conf.update(
 
 # 4. 自动发现任务
 # 这一步非常重要，指向我们下一步要创建的文件
-celery_app.autodiscover_tasks(["app.tasks.sync_tasks"])
+celery_app.autodiscover_tasks(["app.tasks.sync_tasks","app.tasks.auth_tasks"])
