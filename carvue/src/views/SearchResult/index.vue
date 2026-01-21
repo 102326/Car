@@ -1,352 +1,456 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import type { Ref } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { showToast } from 'vant'
+import { searchCars, type SearchParams } from '@/api/search'
+// ✅ 引入正确的类型定义
+import type { ISearchCarProduct, ISearchFacets } from '@/types'
 
-/**
- * 路由实例
- */
 const route = useRoute()
 const router = useRouter()
 
-/**
- * 搜索关键词
- */
-const searchKeyword: Ref<string> = ref<string>(route.query.keyword as string || '凯悦刺鸟')
+// --- 状态管理 ---
+const loading = ref(false)
+const finished = ref(false)
+const showFilter = ref(false) // 控制筛选弹窗
 
-/**
- * 当前激活的Tab
- */
-const activeTab: Ref<string> = ref<string>('all')
+// ✅ 核心数据 (使用正确的类型)
+const carList = ref<ISearchCarProduct[]>([])
+const facets = ref<ISearchFacets>({ brands: [], levels: [], energies: [] })
+const total = ref(0)
 
-/**
- * Tab列表
- */
-const tabs: Array<{ name: string; label: string }> = [
-  { name: 'all', label: '全部' },
-  { name: 'newcar', label: '新车' },
-  { name: 'video', label: '视频' },
-  { name: 'article', label: '图文' },
-  { name: 'shorts', label: '小视频' },
-  { name: 'more', label: '更多' }
+// 搜索参数 (响应式)
+const queryParams = reactive<SearchParams>({
+  q: (route.query.keyword as string) || '',
+  page: 1,
+  size: 10,
+  sort_by: 'default',
+  // 筛选条件
+  brand: undefined,
+  energy_type: undefined,
+  min_price: undefined,
+  max_price: undefined
+})
+
+// 排序选项
+const sortOptions = [
+  { text: '综合排序', value: 'default' },
+  { text: '价格最低', value: 'price_asc' },
+  { text: '价格最高', value: 'price_desc' },
+  { text: '最新上架', value: 'new' },
 ]
 
-/**
- * AI回答是否完成
- */
-const aiAnswerComplete: Ref<boolean> = ref<boolean>(true)
+// --- 核心方法 ---
 
-/**
- * AI回答内容
- */
-const aiAnswerContent: Ref<string> = ref<string>(`凯悦刺鸟是一款高性价比的250cc双缸仿赛摩托车，以下是其特点：
+// 1. 执行搜索
+const doSearch = async (isRefresh = false) => {
+  if (isRefresh) {
+    queryParams.page = 1
+    carList.value = []
+    finished.value = false
+  }
 
-·外观设计：延续凯悦家族战斗风格，线条流畅且肌肉感十足。锐利前脸搭配犀利大灯，攻击性满满，夜间骑行辨识度超高。同时提供多种配色，满足不同审美需求。
+  loading.value = true
+  try {
+    const { data } = await searchCars(queryParams)
+    if (data.code === 200) {
+      // 追加数据
+      const { list, total: totalCount, facets: newFacets } = data.data
+      carList.value = isRefresh ? list : [...carList.value, ...list]
+      total.value = totalCount
 
-·动力性能：搭载249cc直列双缸水冷发动机，最大功率24kW/11500rpm，最大扭矩22.5N·m/9000rpm，官方零百加速6.5秒，极速可达160km/h。动力输出平顺，震动小，日常通勤轻松，跑山也能满足速度渴望。
+      // 更新筛选器选项 (仅第一次或刷新时更新)
+      if (isRefresh) {
+        facets.value = newFacets
+      }
 
-·操控性能：采用WSBK赛车同平台轻量化钻石菱形一体式车架，整备质量仅147kg，灵活性出色。前倒置减震（37mm）不可调，后中置减震（38mm）预载可调，整体调教偏运动，过弯支撑性好。
-
-·安全配置：标配双通道ABS和TCS牵引力控制系统，提升紧急刹车和湿滑路面骑行的安全性。前320mm单盘配凯悦自研双活塞浮动卡钳，后220mm单盘配单活塞浮动卡钳，制动效果强劲。正新CST S1米其林轮胎`)
-
-/**
- * 处理返回
- */
-const handleBack = (): void => {
-  router.back()
+      // 判断是否加载完毕
+      if (carList.value.length >= total.value) {
+        finished.value = true
+      }
+    }
+  } catch (error) {
+    console.error(error)
+    showToast('搜索失败，请稍后重试')
+    finished.value = true
+  } finally {
+    loading.value = false
+  }
 }
 
-/**
- * 处理清除搜索
- */
-const handleClearSearch = (): void => {
-  searchKeyword.value = ''
+// 2. 加载更多
+const onLoad = () => {
+  queryParams.page++
+  doSearch(false)
 }
 
-/**
- * 处理搜索
- */
-const handleSearch = (): void => {
-  console.log('搜索:', searchKeyword.value)
+// 3. 处理排序改变
+const onSortChange = (value: any) => {
+  queryParams.sort_by = value
+  doSearch(true)
 }
+
+// 4. 处理筛选确认
+const onFilterConfirm = () => {
+  showFilter.value = false
+  doSearch(true)
+}
+
+// 5. 顶部搜索栏交互
+const handleSearch = () => {
+  doSearch(true)
+}
+
+const handleClear = () => {
+  queryParams.q = ''
+  doSearch(true)
+}
+
+// --- 生命周期 ---
+onMounted(() => {
+  doSearch(true)
+})
+
+watch(() => route.query.keyword, (newVal) => {
+  if (newVal !== queryParams.q) {
+    queryParams.q = newVal as string
+    doSearch(true)
+  }
+})
 </script>
 
 <template>
   <div class="search-result-page">
-    <!-- 顶部搜索栏 -->
-    <div class="search-header">
-      <van-icon name="arrow-left" class="back-icon" @click="handleBack" />
-      <div class="search-box">
-        <van-icon name="search" />
-        <input 
-          v-model="searchKeyword"
-          type="search"
-          placeholder="请输入搜索关键词"
-          @keyup.enter="handleSearch"
-        />
-        <van-icon 
-          v-if="searchKeyword" 
-          name="clear" 
-          class="clear-icon" 
-          @click="handleClearSearch" 
-        />
+    <div class="fixed-header">
+      <div class="search-header">
+        <van-icon name="arrow-left" class="back-icon" @click="router.back()" />
+        <div class="search-input-box">
+          <van-icon name="search" />
+          <input
+              v-model="queryParams.q"
+              type="search"
+              placeholder="搜一搜有没有你的Dream Car"
+              @keyup.enter="handleSearch"
+          />
+          <van-icon v-if="queryParams.q" name="clear" @click="handleClear" />
+        </div>
+        <span class="search-btn" @click="handleSearch">搜索</span>
       </div>
-      <div class="search-button" @click="handleSearch">搜索</div>
+
+      <div class="toolbar">
+        <van-dropdown-menu>
+          <van-dropdown-item
+              v-model="queryParams.sort_by"
+              :options="sortOptions"
+              @change="onSortChange"
+          />
+        </van-dropdown-menu>
+        <div class="filter-btn" @click="showFilter = true">
+          筛选 <van-icon name="filter-o" />
+        </div>
+      </div>
     </div>
 
-    <!-- Tab导航 -->
-    <van-tabs 
-      v-model:active="activeTab"
-      sticky
-      offset-top="52"
-      color="#e52e2e"
-      title-active-color="#323233"
-      title-inactive-color="#969799"
-      class="result-tabs"
-    >
-      <van-tab 
-        v-for="tab in tabs" 
-        :key="tab.name"
-        :title="tab.label" 
-        :name="tab.name"
+    <div class="content-area">
+      <van-list
+          v-model:loading="loading"
+          :finished="finished"
+          finished-text="没有更多了"
+          @load="onLoad"
       >
-        <!-- AI小易回答 -->
-        <div class="ai-section">
-          <div class="ai-header">
-            <div class="ai-logo">
-              <div class="logo-icon">Ai</div>
-              <span class="logo-text">小易</span>
+        <div
+            v-for="car in carList"
+            :key="car.id"
+            class="car-card"
+            @click="router.push(`/car/${car.id}`)"
+        >
+          <div class="car-img-box">
+            <img :src="car.coverImage" :alt="car.name" />
+            <div class="badge" v-if="car.energy_type !== '汽油' && car.energy_type !== '柴油'">新能源</div>
+          </div>
+          <div class="car-info">
+            <h3 class="title" v-html="car.name_highlight || car.name"></h3>
+            <div class="tags">
+              <span class="tag">{{ car.year }}款</span>
+              <span class="tag">{{ car.series_level }}</span>
             </div>
-            <div v-if="aiAnswerComplete" class="complete-badge">
-              <van-icon name="success" />
-              <span>完成回答</span>
+            <div class="price-row">
+              <span class="price">¥{{ car.price }}万</span>
+              <span class="msrp">指导价</span>
+            </div>
+          </div>
+        </div>
+      </van-list>
+    </div>
+
+    <van-popup
+        v-model:show="showFilter"
+        position="right"
+        :style="{ width: '80%', height: '100%' }"
+    >
+      <div class="filter-panel">
+        <div class="filter-body">
+          <div class="filter-group">
+            <div class="group-title">价格区间 (万元)</div>
+            <div class="price-inputs">
+              <input type="number" v-model.number="queryParams.min_price" placeholder="最低" />
+              <span class="divider">-</span>
+              <input type="number" v-model.number="queryParams.max_price" placeholder="最高" />
             </div>
           </div>
 
-          <div class="ai-answer">
-            <div class="answer-title">
-              凯悦刺鸟是一款高性价比的250cc双缸仿赛摩托车，以下是其特点：
+          <div class="filter-group" v-if="facets.brands?.length">
+            <div class="group-title">品牌</div>
+            <div class="check-grid">
+              <div
+                  v-for="brand in facets.brands"
+                  :key="brand"
+                  class="check-item"
+                  :class="{ active: queryParams.brand === brand }"
+                  @click="queryParams.brand = (queryParams.brand === brand ? undefined : brand)"
+              >
+                {{ brand }}
+              </div>
             </div>
+          </div>
 
-            <div class="answer-content">
-              <div class="content-section">
-                <div class="section-title">·外观设计</div>
-                <div class="section-text">
-                  ：延续凯悦家族战斗风格，线条流畅且肌肉感十足。锐利前脸搭配犀利大灯，攻击性满满，夜间骑行辨识度超高。同时提供多种配色，满足不同审美需求。
-                </div>
-              </div>
-
-              <div class="content-section">
-                <div class="section-title">·动力性能</div>
-                <div class="section-text">
-                  ：搭载249cc直列双缸水冷发动机，最大功率24kW/11500rpm，最大扭矩22.5N·m/9000rpm，官方零百加速6.5秒，极速可达160km/h。动力输出平顺，震动小，日常通勤轻松，跑山也能满足速度渴望。
-                </div>
-              </div>
-
-              <div class="content-section">
-                <div class="section-title">·操控性能</div>
-                <div class="section-text">
-                  ：采用WSBK赛车同平台轻量化钻石菱形一体式车架，整备质量仅147kg，灵活性出色。前倒置减震（37mm）不可调，后中置减震（38mm）预载可调，整体调教偏运动，过弯支撑性好。
-                </div>
-              </div>
-
-              <div class="content-section">
-                <div class="section-title">·安全配置</div>
-                <div class="section-text">
-                  ：标配双通道ABS和TCS牵引力控制系统，提升紧急刹车和湿滑路面骑行的安全性。前320mm单盘配凯悦自研双活塞浮动卡钳，后220mm单盘配单活塞浮动卡钳，制动效果强劲。正新CST S1米其林轮胎
-                </div>
+          <div class="filter-group" v-if="facets.energies?.length">
+            <div class="group-title">能源类型</div>
+            <div class="check-grid">
+              <div
+                  v-for="energy in facets.energies"
+                  :key="energy"
+                  class="check-item"
+                  :class="{ active: queryParams.energy_type === energy }"
+                  @click="queryParams.energy_type = (queryParams.energy_type === energy ? undefined : energy)"
+              >
+                {{ energy }}
               </div>
             </div>
           </div>
         </div>
 
-        <!-- 其他搜索结果内容占位 -->
-        <div class="other-results">
-          <div class="placeholder-text">其他搜索结果加载中...</div>
+        <div class="filter-footer">
+          <van-button block round @click="showFilter = false">取消</van-button>
+          <van-button block round type="primary" @click="onFilterConfirm">确定</van-button>
         </div>
-      </van-tab>
-    </van-tabs>
+      </div>
+    </van-popup>
   </div>
 </template>
 
 <style scoped>
 .search-result-page {
-  width: 100%;
+  padding-top: 100px;
   min-height: 100vh;
-  background-color: #f7f8fa;
+  background: #f7f8fa;
 }
 
-/* 顶部搜索栏 */
-.search-header {
+.fixed-header {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  z-index: 1000;
+  z-index: 99;
+  background: #fff;
+}
+
+.search-header {
   display: flex;
   align-items: center;
+  padding: 10px 16px;
   gap: 12px;
-  padding: 8px 16px;
-  background-color: #ffffff;
-  border-bottom: 1px solid #ebedf0;
 }
 
-.back-icon {
-  font-size: 20px;
-  color: #323233;
-  cursor: pointer;
-}
-
-.search-box {
+.search-input-box {
   flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 12px;
-  background-color: #f7f8fa;
+  background: #f2f3f5;
   border-radius: 18px;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.search-box input {
-  flex: 1;
+.search-input-box input {
   border: none;
-  outline: none;
   background: transparent;
+  width: 100%;
   font-size: 14px;
-  color: #323233;
 }
 
-.search-box input::placeholder {
-  color: #969799;
-}
-
-.clear-icon {
-  font-size: 16px;
-  color: #969799;
-  cursor: pointer;
-}
-
-.search-button {
-  font-size: 14px;
-  color: #323233;
-  cursor: pointer;
-}
-
-/* Tab导航 */
-.result-tabs {
-  margin-top: 52px;
-}
-
-:deep(.van-tabs__wrap) {
-  position: fixed;
-  top: 52px;
-  left: 0;
-  right: 0;
-  z-index: 999;
-}
-
-:deep(.van-tabs__content) {
-  margin-top: 44px;
-}
-
-/* AI回答区域 */
-.ai-section {
-  padding: 16px;
-  background-color: #ffffff;
-  margin-bottom: 8px;
-}
-
-.ai-header {
+.toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
+  border-bottom: 1px solid #eee;
 }
 
-.ai-logo {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+:deep(.van-dropdown-menu__bar) {
+  box-shadow: none;
 }
 
-.logo-icon {
-  width: 32px;
-  height: 32px;
+.filter-btn {
+  flex: 1;
+  text-align: center;
+  font-size: 14px;
+  color: #323233;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: bold;
-  color: #ffffff;
-}
-
-.logo-text {
-  font-size: 16px;
-  font-weight: 500;
-  color: #323233;
-}
-
-.complete-badge {
-  display: flex;
-  align-items: center;
   gap: 4px;
-  padding: 4px 12px;
-  background-color: #f0f9ff;
-  border-radius: 12px;
-  font-size: 12px;
-  color: #1989fa;
 }
 
-.complete-badge .van-icon {
-  font-size: 14px;
+.content-area {
+  padding: 12px;
 }
 
-/* AI回答内容 */
-.ai-answer {
-  line-height: 1.8;
-}
-
-.answer-title {
-  font-size: 15px;
-  font-weight: 500;
-  color: #323233;
+.car-card {
+  background: #fff;
+  border-radius: 8px;
   margin-bottom: 12px;
-  line-height: 1.6;
-}
-
-.answer-content {
+  padding: 12px;
   display: flex;
-  flex-direction: column;
   gap: 12px;
 }
 
-.content-section {
+.car-img-box {
+  width: 120px;
+  height: 80px;
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+  background-color: #f7f8fa; /* 图片未加载时的背景 */
+}
+
+.car-img-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.car-img-box .badge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: #07c160;
+  color: #fff;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-bottom-right-radius: 4px;
+}
+
+.car-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.title {
+  font-size: 16px;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 高亮样式 */
+:deep(.text-red-500) {
+  color: #ee0a24;
+  font-style: normal;
+  font-weight: bold;
+}
+
+.tags {
+  display: flex;
+  gap: 6px;
+}
+
+.tag {
+  background: #f2f3f5;
+  color: #666;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+.price {
+  color: #ee0a24;
+  font-size: 16px;
+  font-weight: bold;
+  margin-right: 6px;
+}
+
+.msrp {
+  color: #999;
+  font-size: 12px;
+}
+
+.filter-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.filter-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.filter-group {
+  margin-bottom: 24px;
+}
+
+.group-title {
+  font-weight: bold;
+  margin-bottom: 12px;
   font-size: 14px;
-  color: #646566;
-  line-height: 1.8;
 }
 
-.section-title {
-  display: inline;
-  font-weight: 500;
-  color: #323233;
+.price-inputs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.section-text {
-  display: inline;
-}
-
-/* 其他结果 */
-.other-results {
-  padding: 40px 16px;
+.price-inputs input {
+  flex: 1;
+  background: #f2f3f5;
+  border: none;
+  border-radius: 16px;
+  padding: 6px 12px;
   text-align: center;
+  font-size: 13px;
 }
 
-.placeholder-text {
-  font-size: 14px;
-  color: #969799;
+.check-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.check-item {
+  background: #f2f3f5;
+  padding: 8px 4px;
+  text-align: center;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #333;
+  border: 1px solid transparent;
+}
+
+.check-item.active {
+  background: #e8f3ff;
+  color: #1989fa;
+  border-color: #1989fa;
+}
+
+.filter-footer {
+  padding: 16px;
+  display: flex;
+  gap: 12px;
+  border-top: 1px solid #eee;
 }
 </style>

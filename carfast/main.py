@@ -9,8 +9,7 @@ from app.config import settings
 from app.core.mq import RabbitMQClient
 # 引入数据库管理
 from app.core.database import init_db, close_db
-from app.api.v1.auth import router as auth_router
-from app.api.v1.search import router as search_router
+from app.api.v1 import search, auth, car, behavior
 
 # ==========================================
 # 🛠 辅助函数：打印带颜色的日志
@@ -146,8 +145,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth_router, prefix="/api/v1/auth", tags=["认证中心"])
-app.include_router(search_router, prefix="/api/v1/search", tags=["搜索中心"])
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
+app.include_router(search.router, prefix="/api/v1/search", tags=["Search"])
+app.include_router(car.router, prefix="/api/v1/cars", tags=["Car"])
+app.include_router(behavior.router, prefix="/api/v1/user", tags=["User Behavior"])
 
 @app.get("/")
 async def root():

@@ -436,3 +436,44 @@ export interface IAIAssistResponse {
   confidence: number;
 }
 
+/**
+ * =================================================================
+ * 🚀 搜索业务扩展类型 (Search Module Extensions)
+ * @description 针对 SearchResult 页面所需的特定类型补充
+ * =================================================================
+ */
+
+/**
+ * 搜索专用商品模型 (扩展自基础 ICarProduct)
+ * @description 增加搜索高亮字段，前端展示专用
+ */
+export interface ISearchCarProduct extends ICarProduct {
+  /** 高亮后的标题 HTML (如: "<em class='text-red-500'>奥迪</em>A4L") */
+  name_highlight?: string;
+}
+
+/**
+ * 搜索聚合筛选器接口
+ * @description 对应后端 Search API 返回的 facets 字段
+ */
+export interface ISearchFacets {
+  /** 品牌聚合列表 */
+  brands: string[];
+  /** 级别聚合列表 (SUV, 轿车等) */
+  levels: string[];
+  /** 能源类型聚合列表 */
+  energies: string[];
+}
+
+/**
+ * 搜索 API 响应数据结构
+ * @description 对应 searchCars 接口的 data 字段
+ */
+export interface ISearchResponseData {
+  /** 商品列表 (使用扩展后的类型) */
+  list: ISearchCarProduct[];
+  /** 总记录数 */
+  total: number;
+  /** 聚合筛选数据 */
+  facets: ISearchFacets;
+}
