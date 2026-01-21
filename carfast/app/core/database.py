@@ -22,7 +22,7 @@ engine = create_async_engine(
     connect_args={
         "server_settings": {
             # PostgreSQL 模式搜索路径
-            "search_path": "car,public"
+            "search_path": "car"
         }
     }
 )
