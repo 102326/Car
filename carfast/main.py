@@ -12,7 +12,8 @@ from app.config import settings
 from app.core.mq import RabbitMQClient
 # 引入数据库管理
 from app.core.database import init_db, close_db
-
+from app.api.v1.auth import router as auth_router
+from app.api.v1.search import router as search_router
 
 # ==========================================
 # 🛠 辅助函数：打印带颜色的日志
@@ -169,6 +170,8 @@ app.add_middleware(
 
 app.include_router(admin_tool.admin_router)
 
+app.include_router(auth_router, prefix="/api/v1/auth", tags=["认证中心"])
+app.include_router(search_router, prefix="/api/v1/search", tags=["搜索中心"])
 
 @app.get("/")
 async def root():

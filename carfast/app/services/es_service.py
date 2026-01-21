@@ -80,3 +80,68 @@ class CarESService:
             logger.info(f"🗑️ [ES] Car {car_id} 删除成功")
         except Exception:
             pass  # 忽略 404
+
+    @classmethod
+    async def search_cars(cls, q: str, page: int = 1, size: int = 10):
+        client = es_client.get_client()
+
+        # 1. 构建 DSL
+        query_body = {
+            "from": (page - 1) * size,
+            "size": size,
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "multi_match": {
+                                "query": q,
+                                # 你的 Mapping 里 brand_name 是 keyword，name 是 text
+                                # 这里的权重设置依然有效
+                                "fields": ["name^3", "brand_name^2", "series_name"],
+                                # fuzziness 对 keyword 字段无效，主要针对 name 字段生效
+                                "type": "best_fields"
+                            }
+                        }
+                    ],
+                    "filter": [
+                        # 只搜状态正常的车 (你定义的 mapping 里有 status 字段)
+                        {"term": {"status": 1}}
+                    ]
+                }
+            },
+            "highlight": {
+                "fields": {
+                    "name": {}
+                    # keyword 类型的 brand_name 通常不支持普通的高亮，这里先只高亮 name
+                },
+                "pre_tags": ["<em class='highlight'>"],
+                "post_tags": ["</em>"]
+            }
+        }
+
+        try:
+            resp = await client.search(index=cls.INDEX_NAME, body=query_body)
+        except Exception as e:
+            logger.error(f"⚠️ ES 搜索异常: {e}")
+            # 返回空结果结构，防止前端报错
+            return {"total": 0, "list": [], "page": page, "size": size}
+
+        # 2. 数据清洗
+        hits = resp["hits"]["hits"]
+        results = []
+        for hit in hits:
+            source = hit["_source"]
+            # 处理高亮
+            if "highlight" in hit:
+                if "name" in hit["highlight"]:
+                    source["name_highlight"] = hit["highlight"]["name"][0]
+
+            source["_id"] = hit["_id"]
+            results.append(source)
+
+        return {
+            "total": resp["hits"]["total"]["value"],
+            "list": results,
+            "page": page,
+            "size": size
+        }
