@@ -3,7 +3,6 @@ from sqlalchemy import String, Integer, ForeignKey, DECIMAL
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.user import TimestampMixin, Base
-
 # ==========================================
 # 2. 车型库核心域 (Car Master Domain)
 # 提示: 详细参数(spec_config)已移至MongoDB，此处仅存骨架
