@@ -43,7 +43,13 @@ const routes: RouteRecordRaw[] = [
     name: 'Mine',
     component: () => import('@/views/Mine/index.vue'),
     meta: { title: '我的' }
-  }
+  },
+  {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/views/Login/index.vue'),
+    meta: { title: '手机号登录' }
+  },
 ]
 
 const router = createRouter({
