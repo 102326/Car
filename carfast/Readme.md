@@ -7,7 +7,7 @@
    > 除非你喜欢当“公交车”，让全网爬虫用你的钱跑测试。
    >
 2. **公共配置**: 非私人的公用 Key (如数据库 Host、RabbitMQ 默认端口) 写到 `config.py`。
-3. **IDE 调教**: 更新完 `requirements.txt` 或环境后，记得在 PyCharm 右下角刷新一下 Python 软件包。
+3. **IDE 调教**: 更新完 `requirements.txt` 或环境后，记得在 PyCharm 左下角刷新一下 Python 软件包。
 
    > Conda 比较笨，不会自己扫描，别怪代码爆红。
    >
@@ -43,7 +43,6 @@ carfast
 ├── main.py             # 启动入口
 └── requirements.txt    # 依赖清单
 ```
-
 
 ## ⚡️ 关键服务说明
 

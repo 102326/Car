@@ -2,6 +2,7 @@ import logging
 from typing import List
 from elasticsearch.helpers import async_bulk
 from app.core.es import es_client
+from app.schemas.search import SearchParams
 
 logger = logging.getLogger("es_service")
 
@@ -124,44 +125,117 @@ class CarESService:
         return failed_ids
 
     @classmethod
-    async def search_cars(cls, q: str, page: int = 1, size: int = 10):
-        # ... (搜索代码保持不变) ...
+    async def search_cars_pro(cls, params: SearchParams):
+        """
+        🚀 [Pro] 电商级搜索实现
+        支持: 关键词 + 多维筛选 + 排序 + 聚合统计
+        """
         client = es_client.get_client()
-        query_body = {
-            "from": (page - 1) * size,
-            "size": size,
+
+        # 1. 构建 Bool Query
+        must_conditions = []
+        filter_conditions = [{"term": {"status": 1}}]  # 只看上架的
+
+        # A. 关键词搜索
+        if params.q:
+            must_conditions.append({
+                "multi_match": {
+                    "query": params.q,
+                    "fields": ["name^3", "brand_name^2", "series_name", "tags_text"],
+                    "type": "best_fields",
+                    "operator": "and" if len(params.q) < 5 else "or"  # 智能切换精度
+                }
+            })
+        else:
+            must_conditions.append({"match_all": {}})
+
+        # B. 结构化筛选 (Filter Context - 不计算分值，快)
+        if params.brand:
+            filter_conditions.append({"term": {"brand_name": params.brand}})
+        if params.series_level:
+            filter_conditions.append({"term": {"series_level": params.series_level}})
+        if params.energy_type:
+            filter_conditions.append({"term": {"energy_type": params.energy_type}})
+
+        # C. 价格范围
+        if params.min_price is not None or params.max_price is not None:
+            range_query = {}
+            if params.min_price is not None: range_query["gte"] = params.min_price
+            if params.max_price is not None: range_query["lte"] = params.max_price
+            filter_conditions.append({"range": {"price": range_query}})
+
+        # 2. 构建排序 (Sort)
+        sort_config = []
+        if params.sort_by == "price_asc":
+            sort_config = [{"price": "asc"}]
+        elif params.sort_by == "price_desc":
+            sort_config = [{"price": "desc"}]
+        elif params.sort_by == "new":
+            sort_config = [{"updated_at": "desc"}]
+        else:
+            # 默认综合排序: 有关键词按相关度(_score)，无关键词按热度/时间
+            if params.q:
+                sort_config = ["_score"]
+            else:
+                sort_config = [{"id": "desc"}]  # 或者按 hot_rank
+
+        # 3. 构建请求体
+        body = {
+            "from": (params.page - 1) * params.size,
+            "size": params.size,
             "query": {
                 "bool": {
-                    "must": [
-                        {
-                            "multi_match": {
-                                "query": q,
-                                "fields": ["name^3", "brand_name^2", "series_name"],
-                                "type": "best_fields"
-                            }
-                        }
-                    ],
-                    "filter": [{"term": {"status": 1}}]
+                    "must": must_conditions,
+                    "filter": filter_conditions
                 }
+            },
+            "sort": sort_config,
+            # ✨ 聚合统计 (侧边栏筛选器的数据源)
+            "aggs": {
+                "brands": {"terms": {"field": "brand_name", "size": 20}},
+                "levels": {"terms": {"field": "series_level", "size": 10}},
+                "energies": {"terms": {"field": "energy_type", "size": 5}}
             },
             "highlight": {
                 "fields": {"name": {}},
-                "pre_tags": ["<em class='highlight'>"],
+                "pre_tags": ["<em class='text-red-500 not-italic'>"],  # 适配 Tailwind CSS
                 "post_tags": ["</em>"]
             }
         }
-        try:
-            resp = await client.search(index=cls.INDEX_NAME, body=query_body)
-        except Exception:
-            return {"total": 0, "list": [], "page": page, "size": size}
 
+        # 4. 执行搜索
+        try:
+            resp = await client.search(index=cls.INDEX_NAME, body=body)
+        except Exception as e:
+            logger.error(f"⚠️ ES Search Error: {e}")
+            return {"total": 0, "list": [], "facets": {}}
+
+        # 5. 结果清洗
         hits = resp["hits"]["hits"]
-        results = []
+        items = []
         for hit in hits:
             source = hit["_source"]
             if "highlight" in hit and "name" in hit["highlight"]:
                 source["name_highlight"] = hit["highlight"]["name"][0]
-            source["_id"] = hit["_id"]
-            results.append(source)
+            else:
+                source["name_highlight"] = source["name"]
 
-        return {"total": resp["hits"]["total"]["value"], "list": results, "page": page, "size": size}
+            # 转换价格为 float
+            source["price"] = float(source["price"]) if source.get("price") else 0.0
+            items.append(source)
+
+        # 6. 提取聚合结果 (Facets)
+        aggs = resp.get("aggregations", {})
+        facets = {
+            "brands": [b["key"] for b in aggs.get("brands", {}).get("buckets", [])],
+            "levels": [l["key"] for l in aggs.get("levels", {}).get("buckets", [])],
+            "energies": [e["key"] for e in aggs.get("energies", {}).get("buckets", [])]
+        }
+
+        return {
+            "total": resp["hits"]["total"]["value"],
+            "page": params.page,
+            "size": params.size,
+            "list": items,
+            "facets": facets  # 前端用这个生成侧边栏
+        }

@@ -26,24 +26,20 @@ class SmartBuffer:
         self.hard_limit = hard_limit  # 触发 Pause 的硬阈值
         self.max_wait = max_wait
 
-        # 缓冲池
         self.event_buffer: Set[Tuple[str, int]] = set()
-
-        # 重试池: {car_id: retry_count}
         self.retry_buffer: Dict[int, int] = {}
-        self.MAX_RETRIES = 3  # 🔥 最大重试次数
+        self.MAX_RETRIES = 3
 
         self.last_flush_time = time.time()
         self._lock = asyncio.Lock()
         self.paused = False
 
     async def add_event(self, table: str, row_id: int):
-        """添加事件并执行流控"""
         async with self._lock:
             self.event_buffer.add((table, row_id))
             current_size = len(self.event_buffer) + len(self.retry_buffer)
 
-        # 1. 🛑 流控 (Backpressure): 超过硬阈值，暂停消费
+        # 1. 🛑 流控 (Backpressure)
         if current_size >= self.hard_limit and not self.paused:
             logger.warning(f"🛑 Buffer 爆满 ({current_size})，暂停消费 Kafka...")
             self.consumer.pause(*self.consumer.assignment())
@@ -62,8 +58,10 @@ class SmartBuffer:
                     self.retry_buffer[i] = count
                 else:
                     # 💀 死信处理 (DLQ)
-                    logger.error(f"💀 [DLQ] ID {i} 重试 {count} 次仍失败，丢弃！(请人工介入)")
-                    # 这里可以将 i 写入 DB 的 dead_letter_queue 表或发给报警群
+                    logger.error(f"💀 [DLQ] ID {i} 重试 {count} 次仍失败，彻底丢弃！")
+                    # ✅ [修复] 显式从重试队列中移除，防止死循环
+                    if i in self.retry_buffer:
+                        del self.retry_buffer[i]
 
     async def flush(self):
         """核心同步逻辑"""
@@ -73,23 +71,15 @@ class SmartBuffer:
 
             # 提取快照
             events = list(self.event_buffer)
-            # 重试的 ID 也参与本次解析和同步
-            retry_ids = list(self.retry_buffer.keys())
+            # 暂存旧的 retry counts，用于后续恢复
+            old_retry_counts = self.retry_buffer.copy()
 
             self.event_buffer.clear()
-            # 注意：retry_buffer 不清空，而是等处理完如果成功了再移除，或者失败了 update
-            # 简化逻辑：先清空 retry_buffer，失败的再加回来（带上累加的 count）
-            # 但为了保持 count，这里暂时全部清空，处理失败时 add_retry_ids 会处理 count
-            # 修正：retry_buffer 存的是 ID->Count。
-            # 我们把 ID 拿出来处理，如果成功了就没事了。如果失败了，add_retry_ids 会读旧 count 吗？
-            # 不会，因为我们把 retry_buffer clear 了。
-            # 💡 修正策略：暂存旧的 retry counts
-            old_retry_counts = self.retry_buffer.copy()
             self.retry_buffer.clear()
 
             self.last_flush_time = time.time()
 
-            # ▶️ 恢复消费 (如果之前暂停了)
+            # ▶️ 恢复消费
             if self.paused:
                 logger.info("▶️ Buffer 压力释放，恢复消费 Kafka...")
                 self.consumer.resume(*self.consumer.assignment())
@@ -105,57 +95,43 @@ class SmartBuffer:
             await self._commit_offset()
             return
 
-        logger.info(f"⚡ [Flush] 处理 {len(impacted_ids)} 个 Car ID (含重试 {len(old_retry_counts)})")
+        logger.info(f"⚡ [Flush] 处理 {len(impacted_ids)} 个 Car ID")
 
-        # 2. 批量处理 (Batch Process)
+        # 2. 批量处理
         all_ids = list(impacted_ids)
         chunk_size = 500
 
         for i in range(0, len(all_ids), chunk_size):
             batch_ids = all_ids[i: i + chunk_size]
 
-            # A. 查库 (Fetch)
-            # 数据库里存在的 -> Upsert
-            # 数据库里不存在的 -> Delete (这就是 Delete 统一处理的核心)
             found_docs = await fetch_and_assemble_car_docs(batch_ids)
             found_ids = {d['id'] for d in found_docs}
-
-            # 计算需要删除的 ID (请求了但没查到，说明被删了)
             missing_ids = [bid for bid in batch_ids if bid not in found_ids]
 
-            # B. 写入 ES (Upsert)
             failed_upsert = []
             if found_docs:
                 failed_upsert = await CarESService.bulk_sync_cars(found_docs)
 
-            # C. 写入 ES (Delete)
             failed_delete = []
             if missing_ids:
-                logger.info(f"🗑️ 检测到 {len(missing_ids)} 条数据已从 DB 删除，同步删除 ES...")
                 failed_delete = await CarESService.bulk_delete_cars(missing_ids)
 
-            # D. 错误处理与重试计数恢复
+            # 恢复重试计数
             current_failed = set(failed_upsert + failed_delete)
             if current_failed:
-                # 恢复 retry count
-                ids_to_restore = []
                 async with self._lock:
                     for fid in current_failed:
-                        # 如果是之前就在 retry 列表里的，恢复计数；如果是新的，计数为 0
-                        prev_count = old_retry_counts.get(fid, 0)
-                        # 手动塞回去
-                        self.retry_buffer[fid] = prev_count  # 先恢复，再调用 add 增加
+                        # 恢复之前的计数
+                        if fid in old_retry_counts:
+                            self.retry_buffer[fid] = old_retry_counts[fid]
 
+                # 再次加入重试逻辑（这里会 +1 并判断是否 DLQ）
                 await self.add_retry_ids(list(current_failed))
 
-        # 3. 手动提交 Offset
         await self._commit_offset()
 
     async def _batch_resolve_events(self, events: List[Tuple[str, int]]) -> Set[int]:
-        """批量反查 (带 SQL IN 上限切分)"""
         final_ids = set()
-
-        # 分组
         model_ids = [eid for t, eid in events if t == 'car_model']
         series_ids = [eid for t, eid in events if t == 'car_series']
         brand_ids = [eid for t, eid in events if t == 'car_brand']
@@ -163,7 +139,6 @@ class SmartBuffer:
         final_ids.update(model_ids)
 
         async with AsyncSessionLocal() as session:
-            # ✂️ Chunking: series_ids 分批查询
             chunk_size = 500
             for i in range(0, len(series_ids), chunk_size):
                 chunk = series_ids[i:i + chunk_size]
@@ -172,7 +147,6 @@ class SmartBuffer:
                 res = await session.execute(stmt)
                 final_ids.update(res.scalars().all())
 
-            # ✂️ Chunking: brand_ids 分批查询
             for i in range(0, len(brand_ids), chunk_size):
                 chunk = brand_ids[i:i + chunk_size]
                 if not chunk: continue
@@ -204,9 +178,6 @@ class SmartBuffer:
                 await self.flush()
 
 
-# ==========================================
-# 🚀 启动入口
-# ==========================================
 async def consume():
     await CarESService.create_index_if_not_exists()
 
@@ -215,15 +186,14 @@ async def consume():
         'cdc.car.car_series',
         'cdc.car.car_brand',
         bootstrap_servers='localhost:9092',
-        group_id='es_sync_group_max',  # Pro Max
-        enable_auto_commit=False,  # 🔥 必须关闭自动提交
+        group_id='es_sync_group_max',
+        enable_auto_commit=False,
         auto_offset_reset='latest'
     )
 
     await consumer.start()
-    logger.info("🚀 [Pro Max] CDC Consumer Started (Flow Control + DLQ + Unified Delete)")
+    logger.info("🚀 [Pro Max] CDC Consumer Started")
 
-    # 调优参数：Hard Limit = 5000 触发暂停
     buffer = SmartBuffer(consumer, max_events=2000, hard_limit=5000, max_wait=1.0)
     asyncio.create_task(buffer.auto_flush_loop())
 
@@ -241,9 +211,6 @@ async def consume():
 
                 table = msg.topic.split('.')[-1]
                 row_id = row['id']
-
-                # 🔥 无论增删改，统统入队，Flush 时再去查库定夺
-                # 这样完美解决了 Delete 和 Update 乱序的问题
                 await buffer.add_event(table, row_id)
 
             except Exception as e:

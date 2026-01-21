@@ -1,52 +1,48 @@
-# app/api/v1/search.py
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-# ✅ 修正：导入你现有的 CarESService
 from app.services.es_service import CarESService
+from app.schemas.search import SearchParams  # 导入入参模型
 from app.utils.jwt import MyJWT
 from app.models.user import UserAuth
 
 router = APIRouter()
 
 
-@router.get("/cars", summary="全站搜索 (混合模式)")
-async def search_cars(
+@router.post("/cars", summary="[Pro] 高级搜索接口")
+async def search_cars_pro(
         request: Request,
-        q: str = Query(..., min_length=1, description="搜索关键词"),
-        page: int = 1,
-        size: int = 10,
+        params: SearchParams,  # 使用 Post Body 传参，比 Query String 更清晰
         db: AsyncSession = Depends(get_db)
 ):
-    # --- 1. 手动柔性鉴权 (保持不变) ---
+    """
+    搜索接口 (支持筛选、排序、聚合)
+
+    - **q**: 关键词 (可选)
+    - **brand**: 品牌筛选
+    - **price**: 价格区间
+    - **sort_by**: 排序方式 (price_asc, price_desc, new)
+    """
+
+    # --- 鉴权逻辑 (仅用于统计/个性化，不拦截) ---
     current_user = None
     auth_header = request.headers.get("Authorization")
-
     if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
         try:
+            token = auth_header.split(" ")[1]
             payload = MyJWT.decode_token(token)
-            user_id = int(payload.get("sub"))
-            current_user = await db.get(UserAuth, user_id)
-        except Exception:
+            current_user = await db.get(UserAuth, int(payload.get("sub")))
+        except:
             pass
 
-    # --- 2. 业务逻辑 ---
-    user_identity = "游客"
-    if current_user:
-        user_identity = f"会员({current_user.phone})"
-
-    print(f"🔍 [{user_identity}] 正在搜索: {q}")
-
-    # ✅ 修正：调用 CarESService
-    result = await CarESService.search_cars(q, page, size)
+    # --- 业务调用 ---
+    result = await CarESService.search_cars_pro(params)
 
     return {
         "code": 200,
         "msg": "success",
         "data": result,
         "meta": {
-            "identity": user_identity,
-            "is_authenticated": bool(current_user)
+            "user": current_user.username if current_user else "guest"
         }
     }
