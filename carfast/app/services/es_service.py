@@ -1,91 +1,132 @@
-# carfast/app/services/es_service.py
 import logging
+from typing import List
+from elasticsearch.helpers import async_bulk
 from app.core.es import es_client
 
 logger = logging.getLogger("es_service")
 
 
 class CarESService:
-    # 索引名称
     INDEX_NAME = "pylab_cars_v1"
 
     @classmethod
     async def create_index_if_not_exists(cls):
-        """
-        初始化索引结构 (Mapping)
-        注意：需要安装 ik 分词插件 (elasticsearch-plugin install analysis-ik)
-        如果未安装，请将 analyzer 改为 "standard"
-        """
+        """初始化索引结构"""
         client = es_client.get_client()
         if await client.indices.exists(index=cls.INDEX_NAME):
             return
 
-        # 定义 Mapping：根据 CarModel 字段定制
         mapping = {
             "settings": {
                 "number_of_shards": 1,
                 "number_of_replicas": 0,
-                "refresh_interval": "1s"  # 1秒刷新一次，平衡实时性与性能
+                "refresh_interval": "1s"
             },
             "mappings": {
                 "properties": {
                     "id": {"type": "integer"},
-                    # 核心搜索字段
                     "name": {
                         "type": "text",
-                        "analyzer": "ik_max_word",  # 最大细粒度分词
+                        "analyzer": "ik_max_word",
                         "search_analyzer": "ik_smart"
                     },
-                    # 筛选字段 (Keyword 用于精确匹配/聚合)
                     "brand_name": {"type": "keyword"},
                     "series_name": {"type": "keyword"},
-                    "series_level": {"type": "keyword"},  # 紧凑型/SUV等
-                    "energy_type": {"type": "keyword"},  # 燃油/纯电
-                    # 排序/范围筛选字段
-                    "price": {"type": "double"},  # 对应 price_guidance
+                    "series_level": {"type": "keyword"},
+                    "energy_type": {"type": "keyword"},
+                    "price": {"type": "double"},
                     "year": {"type": "keyword"},
                     "status": {"type": "integer"},
-                    # 标签全文检索
                     "tags_text": {"type": "text", "analyzer": "ik_smart"},
-                    # 时间用于兜底校验
                     "updated_at": {"type": "date"}
                 }
             }
         }
-
         await client.indices.create(index=cls.INDEX_NAME, body=mapping)
         logger.info(f"✅ ES 索引 {cls.INDEX_NAME} 创建成功")
 
     @classmethod
     async def sync_car_doc(cls, doc: dict):
-        """写入/更新文档"""
-        client = es_client.get_client()
-        try:
-            await client.index(
-                index=cls.INDEX_NAME,
-                id=str(doc["id"]),
-                document=doc
-            )
-            logger.info(f"📥 [ES] Car {doc['id']} 同步成功")
-        except Exception as e:
-            logger.error(f"❌ [ES] Car {doc.get('id')} 同步失败: {e}")
-            raise e
+        await cls.bulk_sync_cars([doc])
 
     @classmethod
     async def delete_car_doc(cls, car_id: int):
-        """删除文档"""
+        await cls.bulk_delete_cars([car_id])
+
+    @classmethod
+    async def bulk_sync_cars(cls, docs: list) -> List[int]:
+        """🚀 批量 Upsert，返回失败 ID"""
+        if not docs:
+            return []
+
         client = es_client.get_client()
+        actions = [
+            {
+                "_index": cls.INDEX_NAME,
+                "_id": str(d["id"]),
+                "_source": d,
+                "_op_type": "index"
+            }
+            for d in docs
+        ]
+        return await cls._execute_bulk(client, actions)
+
+    @classmethod
+    async def bulk_delete_cars(cls, car_ids: list) -> List[int]:
+        """🚀 [新增] 批量删除，返回失败 ID"""
+        if not car_ids:
+            return []
+
+        client = es_client.get_client()
+        actions = [
+            {
+                "_index": cls.INDEX_NAME,
+                "_id": str(cid),
+                "_op_type": "delete"
+            }
+            for cid in car_ids
+        ]
+        # 删除时如果报 404 (not_found)，通常认为是成功的，不需要重试
+        # 但 async_bulk 默认会把 404 算作 error，我们需要在 _execute_bulk 里特殊处理吗？
+        # elasticsearch.helpers 默认 delete 404 算成功吗？通常不算 error。
+        # 我们统一处理。
+        return await cls._execute_bulk(client, actions)
+
+    @classmethod
+    async def _execute_bulk(cls, client, actions) -> List[int]:
+        """统一执行 Bulk 并提取重试 ID"""
+        failed_ids = []
         try:
-            await client.delete(index=cls.INDEX_NAME, id=str(car_id))
-            logger.info(f"🗑️ [ES] Car {car_id} 删除成功")
-        except Exception:
-            pass  # 忽略 404
+            success_count, errors = await async_bulk(client, actions, raise_on_error=False)
+
+            if errors:
+                for err in errors:
+                    # 提取 info，可能是 index, delete, create, update
+                    op_type = next(iter(err.keys()))
+                    info = err[op_type]
+                    status = info.get('status')
+
+                    # 忽略 404 删除错误 (本来就没有，删除了也算成功)
+                    if op_type == 'delete' and status == 404:
+                        continue
+
+                    doc_id = info.get('_id')
+                    error_reason = info.get('error')
+                    logger.error(f"❌ [ES] {op_type} ID {doc_id} 失败: {error_reason}")
+                    if doc_id:
+                        failed_ids.append(int(doc_id))
+
+        except Exception as e:
+            logger.error(f"💥 [ES] Bulk 请求系统级崩溃: {e}")
+            # 系统级崩溃，所有涉及的 ID 都需要重试
+            return [int(a['_id']) for a in actions]
+
+        return failed_ids
 
     @classmethod
     async def search_cars(cls, q: str, page: int = 1, size: int = 10):
+        # ... (搜索代码保持不变) ...
         client = es_client.get_client()
-
-        # 1. 构建 DSL
         query_body = {
             "from": (page - 1) * size,
             "size": size,
@@ -95,53 +136,32 @@ class CarESService:
                         {
                             "multi_match": {
                                 "query": q,
-                                # 你的 Mapping 里 brand_name 是 keyword，name 是 text
-                                # 这里的权重设置依然有效
                                 "fields": ["name^3", "brand_name^2", "series_name"],
-                                # fuzziness 对 keyword 字段无效，主要针对 name 字段生效
                                 "type": "best_fields"
                             }
                         }
                     ],
-                    "filter": [
-                        # 只搜状态正常的车 (你定义的 mapping 里有 status 字段)
-                        {"term": {"status": 1}}
-                    ]
+                    "filter": [{"term": {"status": 1}}]
                 }
             },
             "highlight": {
-                "fields": {
-                    "name": {}
-                    # keyword 类型的 brand_name 通常不支持普通的高亮，这里先只高亮 name
-                },
+                "fields": {"name": {}},
                 "pre_tags": ["<em class='highlight'>"],
                 "post_tags": ["</em>"]
             }
         }
-
         try:
             resp = await client.search(index=cls.INDEX_NAME, body=query_body)
-        except Exception as e:
-            logger.error(f"⚠️ ES 搜索异常: {e}")
-            # 返回空结果结构，防止前端报错
+        except Exception:
             return {"total": 0, "list": [], "page": page, "size": size}
 
-        # 2. 数据清洗
         hits = resp["hits"]["hits"]
         results = []
         for hit in hits:
             source = hit["_source"]
-            # 处理高亮
-            if "highlight" in hit:
-                if "name" in hit["highlight"]:
-                    source["name_highlight"] = hit["highlight"]["name"][0]
-
+            if "highlight" in hit and "name" in hit["highlight"]:
+                source["name_highlight"] = hit["highlight"]["name"][0]
             source["_id"] = hit["_id"]
             results.append(source)
 
-        return {
-            "total": resp["hits"]["total"]["value"],
-            "list": results,
-            "page": page,
-            "size": size
-        }
+        return {"total": resp["hits"]["total"]["value"], "list": results, "page": page, "size": size}
