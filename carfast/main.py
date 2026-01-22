@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.es import es_client
 # 引入配置
 from app.config import settings
+from app.api.v1 import chat
 # 引入 MQ 客户端
 from app.core.mq import RabbitMQClient
 # 引入数据库管理
@@ -149,6 +150,7 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(search.router, prefix="/api/v1/search", tags=["Search"])
 app.include_router(car.router, prefix="/api/v1/cars", tags=["Car"])
 app.include_router(behavior.router, prefix="/api/v1/user", tags=["User Behavior"])
+app.include_router(chat.router, prefix="/api/v1/chat", tags=["AI Chat"])
 
 @app.get("/")
 async def root():

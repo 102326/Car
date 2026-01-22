@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-
+import AiAgent from '@/components/AiAgent/index.vue'
 /**
  * 当前路由
  */
@@ -19,6 +19,7 @@ const showTabbar = computed<boolean>(() => {
 <template>
   <div id="app">
     <router-view />
+    <AiAgent v-if="route.path !== '/login'" />
     
     <!-- 底部导航栏 -->
     <van-tabbar v-if="showTabbar" route active-color="#e52e2e" inactive-color="#7d7e80">

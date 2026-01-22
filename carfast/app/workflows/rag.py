@@ -5,12 +5,15 @@ from typing import AsyncGenerator, List, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from app.utils.llm_factory import LLMFactory
-from app.services.es_service import EsService
+
+# ✅ 修正 1: 导入正确的服务类和参数模型
+from app.services.es_service import CarESService
+from app.schemas.search import SearchParams
 
 # 配置日志
 logger = logging.getLogger(__name__)
 
-# 系统提示词
+# 系统提示词 (保持不变)
 SYSTEM_PROMPT = """你是一个专业的汽车导购助手 CarFast AI。
 你的任务是根据用户的需求和提供的【相关车辆信息】，进行专业的推荐。
 
@@ -36,21 +39,21 @@ async def chat_stream(query: str, user_id: int = None) -> AsyncGenerator[str, No
         # 1. Retrieve (检索): 从 ES 获取真实车辆数据
         # -------------------------------------------------------
         try:
-            # 假设 EsService.search 返回 Pydantic 模型或 Dict
-            # 限制 Top 3 避免 Context 过大
-            search_results = await EsService.search(query, page=1, size=3)
+            # ✅ 修正 2: 构造 SearchParams 并调用 search_cars_pro
+            params = SearchParams(q=query, page=1, size=3)
+            search_results = await CarESService.search_cars_pro(params)
         except Exception as es_err:
             logger.error(f"ES Search Error: {es_err}")
-            # 降级处理：给空列表，让 LLM 凭常识回答或道歉
-            search_results = {"items": []}
+            # 降级处理：给空列表
+            search_results = {"list": []}
 
         # 数据清洗：提取 items 并转为 dict 列表
         cars_data: List[Dict[str, Any]] = []
 
-        # 兼容处理 search_results 的不同返回格式 (Dict 或 List)
         raw_items = []
-        if isinstance(search_results, dict) and "items" in search_results:
-            raw_items = search_results["items"]
+        # ✅ 修正 3: 适配 es_service.py 的返回结构 (key 是 "list" 而不是 "items")
+        if isinstance(search_results, dict) and "list" in search_results:
+            raw_items = search_results["list"]
         elif isinstance(search_results, list):
             raw_items = search_results
 
@@ -69,9 +72,9 @@ async def chat_stream(query: str, user_id: int = None) -> AsyncGenerator[str, No
             yield json.dumps({
                 "type": "related_cars",
                 "data": cars_data
-            }, default=str)  # default=str 处理 datetime 序列化
+            }, default=str)
 
-        # -------------------------------------------------------
+            # -------------------------------------------------------
         # 3. Augment (增强上下文)
         # -------------------------------------------------------
         context_str = ""
@@ -80,6 +83,12 @@ async def chat_stream(query: str, user_id: int = None) -> AsyncGenerator[str, No
                 # 容错获取字段
                 name = car.get("name", "未知车型")
                 price = car.get("price", "未知")
+                # ES 里的高亮字段，如果有就用
+                if car.get("name_highlight"):
+                    # 去掉高亮标签给 LLM，以免干扰
+                    name = car["name_highlight"].replace("<em class='text-red-500 not-italic'>", "").replace("</em>",
+                                                                                                             "")
+
                 desc = f"- 车型: {name}, 指导价: {price}万"
                 context_str += desc + "\n"
         else:
@@ -115,5 +124,4 @@ async def chat_stream(query: str, user_id: int = None) -> AsyncGenerator[str, No
         # -------------------------------------------------------
         # 5. Done (事件: 结束信号)
         # -------------------------------------------------------
-        # 无论成功失败，必须发送 done，否则前端 loading 会一直转
         yield json.dumps({"type": "done"})

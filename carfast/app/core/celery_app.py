@@ -3,15 +3,6 @@ import sys
 from celery import Celery
 from app.config import settings
 
-# 1. Windows 兼容补丁
-if sys.platform == "win32":
-    try:
-        import eventlet
-
-        eventlet.monkey_patch()
-    except ImportError:
-        pass
-
 # 2. 初始化 App
 celery_app = Celery(
     "pylab_worker",  # 建议改个更有辨识度的名字
