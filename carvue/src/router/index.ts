@@ -52,6 +52,12 @@ const routes: RouteRecordRaw[] = [
     name: 'Subsidy',
     component: () => import('@/views/Subsidy/index.vue'),
     meta: { title: '十亿补贴' }
+  },
+  {
+    path: '/ai-chat',
+    name: 'AIChat',
+    component: () => import('@/views/Chat.vue'),
+    meta: { title: 'AI 智能客服' }
   }
 ]
 
