@@ -33,7 +33,7 @@ const functionIcons: FunctionIcon[] = [
   { id: 3, name: '销量排行', icon: '📊' },
   { id: 4, name: '热度排行', icon: '📈' },
   { id: 5, name: '十亿补贴', icon: '🎁' },
-  { id: 6, name: '查经销商', icon: '🏪' }
+  { id: 6, name: 'AI客服', icon: '🤖' }
 ]
 
 /**
@@ -106,7 +106,11 @@ const handleImageSearch = (): void => {
  * 处理功能图标点击
  */
 const handleFunctionClick = (item: FunctionIcon): void => {
-  console.log('点击功能:', item.name)
+  if (item.name === 'AI客服') {
+    router.push('/ai-chat')
+  } else {
+    console.log('点击功能:', item.name)
+  }
 }
 
 /**
