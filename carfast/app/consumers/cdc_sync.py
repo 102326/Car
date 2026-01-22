@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Set, Tuple, List, Dict
 
@@ -11,7 +12,7 @@ from app.core.database import AsyncSessionLocal
 from app.models.car import CarModel, CarSeries
 from app.services.car_assembler import fetch_and_assemble_car_docs
 from app.services.es_service import CarESService
-
+print("🚀 CDC 进程已加载！正在尝试连接 Kafka...", flush=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("CDC_Sync")
 
@@ -180,12 +181,12 @@ class SmartBuffer:
 
 async def consume():
     await CarESService.create_index_if_not_exists()
-
+    kafka_server = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     consumer = AIOKafkaConsumer(
         'cdc.car.car_model',
         'cdc.car.car_series',
         'cdc.car.car_brand',
-        bootstrap_servers='localhost:9092',
+        bootstrap_servers=kafka_server,
         group_id='es_sync_group_max',
         enable_auto_commit=False,
         auto_offset_reset='latest'
