@@ -1,30 +1,40 @@
 <script setup lang="ts">
-import HelloWorld from './components/HelloWorld.vue'
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
+
+/**
+ * 当前路由
+ */
+const route = useRoute()
+
+/**
+ * 是否显示底部导航栏
+ */
+const showTabbar = computed<boolean>(() => {
+  const tabbarRoutes: string[] = ['/', '/buy', '/select', '/used', '/mine']
+  return tabbarRoutes.includes(route.path)
+})
 </script>
 
 <template>
-  <div>
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo" alt="Vite logo" />
-    </a>
-    <a href="https://vuejs.org/" target="_blank">
-      <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-    </a>
+  <div id="app">
+    <router-view />
+    
+    <!-- 底部导航栏 -->
+    <van-tabbar v-if="showTabbar" route active-color="#e52e2e" inactive-color="#7d7e80">
+      <van-tabbar-item to="/" icon="wap-home-o">首页</van-tabbar-item>
+      <van-tabbar-item to="/buy" icon="shopping-cart-o">买车</van-tabbar-item>
+      <van-tabbar-item to="/select" icon="guide-o">选车</van-tabbar-item>
+      <van-tabbar-item to="/used" icon="coupon-o">二手车</van-tabbar-item>
+      <van-tabbar-item to="/mine" icon="user-o">我的</van-tabbar-item>
+    </van-tabbar>
   </div>
-  <HelloWorld msg="Vite + Vue" />
 </template>
 
 <style scoped>
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.vue:hover {
-  filter: drop-shadow(0 0 2em #42b883aa);
+#app {
+  width: 100%;
+  height: 100%;
+  position: relative;
 }
 </style>
