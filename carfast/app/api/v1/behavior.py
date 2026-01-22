@@ -1,15 +1,13 @@
-# app/api/v1/behavior.py
 import time
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from redis.asyncio import Redis
 
-# ✅ 引用项目现有依赖
 from app.core.database import get_db
 from app.core.redis import get_redis
-from app.utils.deps import get_current_user  # <--- Rule 1
-from app.models.user import UserAuth  # <--- Rule 2
+from app.utils.deps import get_current_user
+from app.models.user import UserAuth
 from app.models.car import CarModel
 from app.schemas.car import CarDetailResponse
 
@@ -22,15 +20,9 @@ router = APIRouter()
 @router.post("/history/{car_id}", summary="记录浏览历史")
 async def add_history(
         car_id: int,
-        user: UserAuth = Depends(get_current_user),  # 类型注解正确
+        user: UserAuth = Depends(get_current_user),
         redis: Redis = Depends(get_redis)
 ):
-    """
-    使用 Redis ZSet 存储浏览记录
-    Key: history:user:{user_id}
-    Member: car_id
-    Score: timestamp
-    """
     key = f"history:user:{user.id}"
     timestamp = int(time.time())
 
@@ -82,7 +74,6 @@ async def toggle_favorite(
         db: AsyncSession = Depends(get_db)
 ):
     # ✅ Schema Rule: 使用 car.user_favorite_cars
-    # 使用 text() 执行原生 SQL，避开未定义的 ORM 模型
     check_sql = text("SELECT 1 FROM car.user_favorite_cars WHERE user_id=:uid AND car_id=:cid")
     result = await db.execute(check_sql, {"uid": user.id, "cid": car_id})
     exists = result.first()
@@ -106,7 +97,6 @@ async def check_favorite(
         user: UserAuth = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
 ):
-    # ✅ Schema Rule: car.user_favorite_cars
     sql = text("SELECT 1 FROM car.user_favorite_cars WHERE user_id=:uid AND car_id=:cid")
     result = await db.execute(sql, {"uid": user.id, "cid": car_id})
     return {"is_favorite": bool(result.first())}
@@ -117,17 +107,28 @@ async def get_favorites(
         user: UserAuth = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
 ):
-    # ✅ Schema Rule: Join car.user_favorite_cars
-    # 注意 CarModel 的表名是 car_model，但它可能也在 car schema 下
-    # 假设 CarModel 配置正确，这里我们只关心中间表的全限定名
-    stmt = (
-        select(CarModel)
-        .join(
-            text("car.user_favorite_cars"),
-            CarModel.id == text("car.user_favorite_cars.car_id")
-        )
-        .where(text(f"car.user_favorite_cars.user_id = {user.id}"))
-        .order_by(text("car.user_favorite_cars.created_at DESC"))
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    """
+    获取用户的收藏列表
+    采用两步查询策略，确保 schema 安全并兼容 ORM
+    """
+    # 1. 第一步：使用原生 SQL 查出收藏的 car_id 列表
+    # 这样可以精确指定 car. schema，避开 SQLAlchemy TextClause Join 的坑
+    sql = text("SELECT car_id FROM car.user_favorite_cars WHERE user_id = :uid ORDER BY created_at DESC")
+    result = await db.execute(sql, {"uid": user.id})
+    fav_car_ids = result.scalars().all()
+
+    if not fav_car_ids:
+        return []
+
+    # 2. 第二步：使用标准 ORM 根据 ID 列表查询车辆详情
+    stmt = select(CarModel).where(CarModel.id.in_(fav_car_ids))
+    car_result = await db.execute(stmt)
+    cars = car_result.scalars().all()
+
+    # 3. (可选) 内存排序：保持收藏的时间顺序
+    # 构建 ID -> Car 映射
+    cars_map = {car.id: car for car in cars}
+    # 按 fav_car_ids 的顺序重组列表
+    sorted_cars = [cars_map[cid] for cid in fav_car_ids if cid in cars_map]
+
+    return sorted_cars

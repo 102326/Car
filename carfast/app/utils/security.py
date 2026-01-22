@@ -110,7 +110,7 @@ def check_password_strength(password: str) -> tuple[bool, Optional[str]]:
 # ==========================================
 if __name__ == "__main__":
     # 生成测试密码哈希
-    test_password = "Test@1234"
+    test_password = "102326wasd"
     hashed = get_password_hash(test_password)
     print(f"明文: {test_password}")
     print(f"哈希: {hashed}")

@@ -80,10 +80,13 @@ const createLoginRequest = (): ILoginRequest | null => {
     case 'password':
       return {
         login_type: 'password',
-        payload: { username: form.username, password: form.password }
+        // ✅ 修正: 映射 form.username -> payload.account
+        payload: {
+          account: form.username,
+          password: form.password
+        }
       }
     case 'dingtalk':
-      // 钉钉直接跳转授权，这里不需要构造常规登录请求
       return null
     default:
       return null

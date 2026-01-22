@@ -8,7 +8,7 @@ export interface IAuthPayload {
 
 // 策略 1: 账密登录 Payload
 export interface IPasswordPayload extends IAuthPayload {
-    username: string
+    account: string  // ✅ 修正: username -> account
     password: string
 }
 

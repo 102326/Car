@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { showToast } from 'vant'
+import { getUserInfo } from '@/api/auth'
 // 引入 API 和 类型
 import { getHistory, getFavorites } from '@/api/behavior'
 // 注意：根据你的 types/index.ts，车型接口叫 ICarProduct
 import type { ICarProduct } from '@/types'
 
 const router = useRouter()
-
+const route = useRoute()
 // --- 状态管理 ---
 const isLogin = ref(false)
 const activeTab = ref(0) // 0: 收藏, 1: 足迹
@@ -34,21 +35,39 @@ onMounted(() => {
   checkLogin()
 })
 
-const checkLogin = () => {
+const checkLogin = async () => {
   const token = localStorage.getItem('token')
   if (token) {
     isLogin.value = true
-    // 模拟已登录用户信息 (进阶：这里应该调用 getUserInfo API)
-    userInfo.value = {
-      nickname: '尊贵的易车会员',
-      avatar: 'https://via.placeholder.com/80x80/1989fa/FFFFFF?text=VIP',
-      level: 6,
-      coins: 1280,
-      following: 12,
-      followers: 5
+
+    try {
+      const { data } = await getUserInfo()
+      if (data.code === 200 && data.data) {
+        const u = data.data
+        userInfo.value = {
+          nickname: u.nickname,
+          avatar: u.avatar || 'https://via.placeholder.com/80x80',
+          level: u.vip_level || 1,
+          coins: 0,
+          following: 0,
+          followers: 0
+        }
+        // 只有获取用户信息成功了，才去加载足迹和收藏
+        loadData()
+      } else {
+        throw new Error(data.msg || '获取用户信息失败')
+      }
+    } catch (error: any) {
+      console.error('鉴权失败:', error)
+
+      // ✅ 新增：如果是 401 或者是 Token 无效，立刻清除本地缓存
+      if (error.response?.status === 401 || error.code === 'ERR_BAD_REQUEST') {
+        localStorage.removeItem('token')
+        isLogin.value = false
+        // 可选：提示用户
+        // showToast('登录已过期，请重新登录')
+      }
     }
-    // 加载行为数据
-    loadData()
   }
 }
 
@@ -94,11 +113,14 @@ const goDetail = (id: string | number) => {
 
 // 跳转登录
 const goLogin = () => {
-  if (!isLogin.value) {
-    // 这里假设有一个登录页，或者直接用 Auth 组件
-    showToast('请先对接登录功能')
-    // router.push('/login')
-  }
+  // 如果已经登录，点击头部可能是去"个人设置"或"编辑资料"，这里暂时不做
+  if (isLogin.value) return
+
+  router.push({
+    path: '/login',
+    // 携带 redirect 参数，登录页(Login/index.vue) 登录成功后会读取这个参数跳转回来
+    query: { redirect: route.fullPath }
+  })
 }
 
 // 模拟功能点击
