@@ -1,94 +1,127 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.schemas.auth import LoginRequest
+from app.schemas.auth import LoginParam, Token, UserInfo
 from app.services.auth.factory import AuthFactory
 from app.utils.jwt import MyJWT
-from app.tasks.auth_tasks import send_login_notification, analyze_login_risk
-# ✅ 确保引入 UserAuth 和 依赖
 from app.models.user import UserAuth
-from app.utils.deps import get_current_user
+# 引入 Celery 任务
+from app.tasks.auth_tasks import (
+    send_sms_code_task,
+    send_login_notification,
+    analyze_login_risk
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
-@router.post("/login", summary="统一登录接口 (策略模式 + EDA)")
+# --- 新增：发送验证码接口 ---
+@router.post("/sms", summary="发送短信验证码")
+async def send_sms_code(
+    phone: str,
+):
+    """
+    前端点击'获取验证码'时调用此接口
+    """
+    mock_code = "8888"
+    logger.info(f"📱 收到发送验证码请求: {phone}")
+
+    # 触发 P1 级 Celery 任务
+    send_sms_code_task.delay(phone, mock_code)
+
+    return {"code": 200, "msg": "验证码已发送 (测试环境默认为 8888)"}
+
+
+@router.post("/login", response_model=Token, summary="统一登录接口")
 async def login(
-        body: LoginRequest,
-        request: Request,
-        db: AsyncSession = Depends(get_db)
-):
-    try:
-        # 1. 找策略
-        strategy = AuthFactory.get_strategy(body.login_type)
-
-        # 2. 认身份
-        user = await strategy.authenticate(body.payload, db)
-
-        # 3. 发令牌
-        access_token, refresh_token = await MyJWT.login_user(user.id)
-
-        # 4. 广播事件 (EDA - Fire and Forget)
-        client_ip = request.client.host
-        send_login_notification.delay(
-            user_id=user.id,
-            login_type=body.login_type,
-            ip=client_ip
-        )
-        analyze_login_risk.delay(
-            user_id=user.id,
-            ip=client_ip
-        )
-
-        return {
-            "code": 200,
-            "msg": "登录成功",
-            "data": {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "login_type": body.login_type,
-                "user_id": user.id
-            }
-        }
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.get("/me", summary="获取当前用户信息")
-async def get_current_user_info(
-        current_user: UserAuth = Depends(get_current_user),
+    request: Request,
+    param: LoginParam,  # 使用新的 LoginParam 模型
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    根据 Token 获取当前登录用户的详细信息
+    支持多种登录方式 (策略模式):
+    - password: 账号密码
+    - sms: 手机号验证码
+    - dingtalk: 钉钉免登
     """
-    # 1. 获取手机号 (UserAuth 中定义了 phone 字段)
-    user_phone = current_user.phone
+    # 1. 获取对应的登录策略
+    strategy = AuthFactory.get_strategy(param.login_type)
+    if not strategy:
+        raise HTTPException(status_code=400, detail=f"不支持的登录方式: {param.login_type}")
 
-    # 2. 手机号脱敏处理 (例如: 138****0000)
-    masked_phone = ""
-    if user_phone and len(str(user_phone)) >= 11:
-        p = str(user_phone)
-        masked_phone = p[:3] + "****" + p[-4:]
-    else:
-        masked_phone = str(user_phone) if user_phone else "未知用户"
+    # 2. 执行登录认证 (返回 User 对象)
+    # ✅ [修正点 1] 使用 model_dump() 替代 .dict() (Pydantic v2)
+    # ✅ [修正点 2] 修正参数顺序：先传 payload (dict)，再传 db (AsyncSession)
+    #    对应 base.py: authenticate(self, payload: dict, db: AsyncSession)
+    payload = param.model_dump()
+    user = await strategy.authenticate(payload, db)
 
-    # 3. 生成显示用的昵称
-    # 既然 UserAuth 没有 username，我们用"用户+手机尾号"作为默认昵称
-    display_name = f"用户{masked_phone[-4:]}" if user_phone else "易车新用户"
+    if not user:
+        raise HTTPException(status_code=401, detail="认证失败")
+
+    # 3. 签发 JWT
+    access_token = MyJWT.create_token(str(user.id))
+
+    # 4. 获取客户端 IP (用于风控)
+    client_ip = request.client.host if request.client else "unknown"
+
+    # 5. 触发异步副作用任务 (Celery)
+    logger.info(f"🚀 登录成功，触发异步任务 -> User: {user.id}")
+
+    # Task A: 发送登录通知 (P2 低优队列)
+    send_login_notification.delay(
+        user_id=user.id,
+        login_type=param.login_type,
+        ip=client_ip
+    )
+
+    # Task B: 触发风控分析 (P1 高优队列)
+    analyze_login_risk.delay(
+        user_id=user.id,
+        ip=client_ip
+    )
 
     return {
-        "code": 200,
-        "msg": "success",
-        "data": {
-            "id": current_user.id,
-            # 前端可能还在用 username 字段做兼容，我们把手机号传给它
-            "username": user_phone,
-            "phone": user_phone,
-            "nickname": display_name,
-            # 暂时给个默认头像
-            "avatar": "https://img.yzcdn.cn/vant/cat.jpeg",
-            "vip_level": 1,
-            "vip_label": "普通会员"
-        }
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_name": user.username or user.phone or "未命名用户"
+    }
+
+
+@router.get("/me", response_model=UserInfo, summary="获取当前用户信息")
+async def get_current_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    需要 Header 携带 Authorization: Bearer <token>
+    """
+    # 1. 解析 Token
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="未登录")
+
+    token = auth_header.split(" ")[1]
+    try:
+        payload = MyJWT.decode_token(token)
+        user_id = int(payload.get("sub"))
+    except:
+        raise HTTPException(status_code=401, detail="Token 无效")
+
+    # 2. 查询数据库
+    user = await db.get(UserAuth, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="用户不存在")
+
+    # 3. 构造返回
+    display_name = f"用户{user.phone[-4:]}" if user.phone else "匿名用户"
+
+    return {
+        "id": user.id,
+        "username": user.username,
+        "nickname": getattr(user, "nickname", display_name),
+        "avatar": user.avatar,
+        "roles": ["user"]
     }
