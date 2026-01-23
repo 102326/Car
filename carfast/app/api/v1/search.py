@@ -1,44 +1,58 @@
-from fastapi import APIRouter, Depends, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.database import get_db
+from fastapi import APIRouter, Request, Header
+# ❌ 彻底移除 DB 相关依赖
+# from sqlalchemy.ext.asyncio import AsyncSession
+# from app.core.database import get_db
+# from app.models.user import UserAuth
 from app.services.es_service import CarESService
-from app.schemas.search import SearchParams  # 确保 app/schemas/search.py 已创建
+from app.schemas.search import SearchParams
 from app.utils.jwt import MyJWT
-from app.models.user import UserAuth
+from typing import Optional
 
 router = APIRouter()
 
 
-# ✅ 改为 POST 方法，以支持复杂的 JSON Body 传参
-@router.post("/cars", summary="[Pro] 高级搜索接口")
+@router.post("/cars", summary="[Pro] 高级搜索接口 (纯净版)")
 async def search_cars_pro(
         request: Request,
-        params: SearchParams,  # 使用 Pydantic 模型接收前端的 JSON
-        db: AsyncSession = Depends(get_db)
+        params: SearchParams,
+        # ✅ 核心改动：移除 db: AsyncSession 依赖
+        # 这意味着请求进来时，FastAPI 不会去触碰数据库连接池
+        authorization: Optional[str] = Header(None)
 ):
     """
-    搜索接口 (支持筛选、排序、聚合)
-    - q: 关键词
-    - brand: 品牌
-    - min_price/max_price: 价格区间
-    - sort_by: 排序
+    极致性能搜索接口:
+    1. 纯 CPU 运算 (JWT 解析)
+    2. 纯 ES I/O (数据检索)
+    3. 零 PGSQL 压力 (Stateless)
     """
 
-    # --- 柔性鉴权 ---
-    current_user = None
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
+    # --- 1. Stateless 鉴权 (纯 CPU) ---
+    current_user_id = None
+    user_role = "guest"
+
+    if authorization and authorization.startswith("Bearer "):
         try:
-            token = auth_header.split(" ")[1]
+            token = authorization.split(" ")[1]
+            # 这里只做 CPU 密文解码和签名校验，不查库
             payload = MyJWT.decode_token(token)
-            current_user = await db.get(UserAuth, int(payload.get("sub")))
-        except:
+
+            # 直接从 Token 里拿数据 (Phase 2 的 JWT 必须包含这些信息)
+            current_user_id = payload.get("sub")
+            user_role = payload.get("role", "user")
+        except Exception as e:
+            # Token 无效不阻断搜索，降级为游客
+            print(f"Token decode failed: {e}")
             pass
 
-    user_identity = f"会员({current_user.phone})" if current_user else "游客"
-    print(f"🔍 [{user_identity}] 高级搜索: {params.dict()}")
+    user_identity = f"会员({current_user_id})" if current_user_id else "游客"
 
-    # ✅ 调用 ES 服务的高级搜索方法
+    # 打印日志 (实际生产中建议用 logger)
+    # 此时我们已经知道是谁在搜，但完全没用数据库
+    print(f"🚀 [{user_identity} | Role:{user_role}] 执行搜索: {params.dict()}")
+
+    # --- 2. 纯 ES 查询 ---
+    # 如果未来需要针对 user_id 做个性化排序，直接把 id 传给 ES Service
+    # 让 ES 去处理，而不是在这里查 PG
     result = await CarESService.search_cars_pro(params)
 
     return {
@@ -46,6 +60,7 @@ async def search_cars_pro(
         "msg": "success",
         "data": result,
         "meta": {
-            "identity": user_identity
+            "identity": user_identity,
+            "latency_source": "Elasticsearch Only"  # 标记数据源
         }
     }
