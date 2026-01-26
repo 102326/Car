@@ -19,7 +19,10 @@ async def retrieve_node(state: RAGState):
 
 async def generate_node(state: RAGState):
     llm = LLMFactory.get_llm()
-    prompt = ChatPromptTemplate.from_template("基于上下文回答: {context}\n问题: {question}")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "你是一个专业的汽车智能客服助手（CarFast AI）。请根据提供的上下文信息，礼貌、准确地回答用户的问题。如果上下文中没有相关信息，请基于你的专业知识回答，并注明'根据现有知识库补充'。"),
+        ("user", "上下文信息：{context}\n\n用户问题：{question}")
+    ])
     chain = prompt | llm | StrOutputParser()
     answer = await chain.ainvoke({"question": state["question"], "context": state["context"]})
     return {"answer": answer}

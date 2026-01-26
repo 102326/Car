@@ -2,7 +2,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.views import admin_tool
+from app.views import admin_tool, chat
 from app.core.scheduler import start_scheduler, scheduler
 
 from app.core.es import es_client
@@ -169,6 +169,7 @@ app.add_middleware(
 )
 
 app.include_router(admin_tool.admin_router)
+app.include_router(chat.chat_router)
 
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["认证中心"])
 app.include_router(search_router, prefix="/api/v1/search", tags=["搜索中心"])
