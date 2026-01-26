@@ -54,6 +54,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '十亿补贴' }
   },
   {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/views/Login/index.vue'),
+    meta: { title: '登录' }
+  },
+  {
     path: '/ai-chat',
     name: 'AIChat',
     component: () => import('@/views/Chat.vue'),
