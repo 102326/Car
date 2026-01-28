@@ -38,6 +38,8 @@ from app.models.systemDomain import (
     AIChatSession
 )
 
+from app.models.agent_memory import AgentMemoryProfile
+
 __all__ = [
     # Base
     "Base",
@@ -71,4 +73,7 @@ __all__ = [
     # System Domain
     "AppVersion",
     "AIChatSession",
+    
+    # AI Domain
+    "AgentMemoryProfile",
 ]

@@ -1,19 +1,22 @@
 <script setup lang="ts">
-import { ref, nextTick, onUnmounted, watch } from 'vue'
+import { ref, nextTick, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import MarkdownIt from 'markdown-it'
+import { sendAgentMessage } from '@/api/agent'
+import { getUserInfo } from '@/api/auth'
+import type { AgentChatResponse } from '@/api/agent'
 
 const router = useRouter()
 const md = new MarkdownIt()
 
 // --- 状态定义 ---
 const isOpen = ref(false)         // 窗口开关
-const isTyping = ref(false)       // 是否正在生成
+const isTyping = ref(false)       // 是否正在等待 Agent 响应
 const inputText = ref('')         // 输入框内容
 const messages = ref<any[]>([])   // 消息列表
-const socket = ref<WebSocket | null>(null)
 const chatBodyRef = ref<HTMLElement | null>(null)
+const currentUser = ref<any>(null) // 当前登录用户信息
 
 // 消息结构类型
 interface IChatMessage {
@@ -21,102 +24,54 @@ interface IChatMessage {
   content: string       // 文本内容 (Markdown)
   cars?: any[]          // 关联车辆数据
   isError?: boolean
+  // Agent 元数据
+  steps?: number        // 思考步数
+  intent?: string       // 识别意图
+  elapsed_ms?: number   // 处理耗时
 }
 
-// --- 核心逻辑: WebSocket 连接 ---
-const connectWebSocket = () => {
+// --- 生命周期 ---
+onMounted(async () => {
+  // 尝试获取已登录用户信息
+  await fetchUserInfo()
+})
+
+// --- 获取用户信息 ---
+const fetchUserInfo = async () => {
   const token = localStorage.getItem('token')
-  if (!token) {
-    showToast('请先登录')
-    router.push('/login')
-    return
-  }
-
-  // 避免重复连接
-  if (socket.value && socket.value.readyState === WebSocket.OPEN) return
-
-  // 初始化 WS
-  // 注意：这里假设后端端口是 8000，如果是 8888 请自行调整
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const wsUrl = `${protocol}://localhost:8000/api/v1/chat/ws?token=${token}`
-
-  socket.value = new WebSocket(wsUrl)
-
-  socket.value.onopen = () => {
-    console.log('AI Agent Connected')
-  }
-
-  socket.value.onmessage = (event) => {
-    try {
-      const payload = JSON.parse(event.data)
-      handleSocketEvent(payload)
-    } catch (e) {
-      console.error('WS Parse Error', e)
+  if (!token) return
+  
+  try {
+    const res = await getUserInfo()
+    // 后端直接返回 UserInfo: { id, username, nickname, avatar, roles }
+    if (res.data?.id) {
+      currentUser.value = res.data
     }
-  }
-
-  socket.value.onclose = (e) => {
-    console.log('AI Agent Disconnected', e.code)
-    isTyping.value = false
-    if (e.code === 1008) {
-      showToast('登录过期，请重新登录')
-      localStorage.removeItem('token')
-    }
-  }
-
-  socket.value.onerror = (e) => {
-    console.error('WS Error', e)
-    isTyping.value = false
-  }
-}
-
-// --- 核心逻辑: 事件分发 (Event Driven) ---
-const handleSocketEvent = (payload: any) => {
-  const lastMsg = messages.value[messages.value.length - 1]
-
-  switch (payload.type) {
-      // 1. 收到相关车辆数据 -> 插入到当前 AI 消息中
-    case 'related_cars':
-      if (lastMsg && lastMsg.role === 'ai') {
-        lastMsg.cars = payload.data
-      } else {
-        // 如果还没有 AI 消息，先创建一个
-        messages.value.push({ role: 'ai', content: '', cars: payload.data })
-      }
-      scrollToBottom()
-      break
-
-      // 2. 收到文本流 -> 追加到当前 AI 消息
-    case 'stream_text':
-      isTyping.value = true
-      if (lastMsg && lastMsg.role === 'ai') {
-        lastMsg.content += payload.content
-      } else {
-        messages.value.push({ role: 'ai', content: payload.content })
-      }
-      scrollToBottom()
-      break
-
-      // 3. 结束信号
-    case 'done':
-      isTyping.value = false
-      break
-
-      // 4. 错误信号
-    case 'error':
-      isTyping.value = false
-      messages.value.push({ role: 'ai', content: payload.message, isError: true })
-      scrollToBottom()
-      break
+  } catch (e) {
+    console.warn('获取用户信息失败', e)
   }
 }
 
 // --- 交互逻辑 ---
-const toggleWindow = () => {
+const toggleWindow = async () => {
   isOpen.value = !isOpen.value
+  
   if (isOpen.value) {
-    connectWebSocket()
-    // 如果是第一次打开且没消息，加个欢迎语
+    // 检查登录状态
+    const token = localStorage.getItem('token')
+    if (!token) {
+      showToast('请先登录')
+      router.push('/login')
+      isOpen.value = false
+      return
+    }
+    
+    // 确保有用户信息
+    if (!currentUser.value) {
+      await fetchUserInfo()
+    }
+    
+    // 首次打开添加欢迎语
     if (messages.value.length === 0) {
       messages.value.push({
         role: 'ai',
@@ -127,43 +82,87 @@ const toggleWindow = () => {
   }
 }
 
-const sendMessage = () => {
+const sendMessage = async () => {
   const text = inputText.value.trim()
-  if (!text || !socket.value || socket.value.readyState !== WebSocket.OPEN) return
+  if (!text || isTyping.value) return
 
   // 1. 上屏用户消息
   messages.value.push({ role: 'user', content: text })
   inputText.value = ''
   scrollToBottom()
 
-  // 2. 发送给后端
-  socket.value.send(text)
-
-  // 3. 预置一个空的 AI 消息等待回流 (优化体验)
+  // 2. 开始加载状态
   isTyping.value = true
-  messages.value.push({ role: 'ai', content: '' })
+
+  try {
+    // 3. 调用后端 Agent API (带用户ID)
+    const response: AgentChatResponse = await sendAgentMessage({
+      message: text,
+      user_id: currentUser.value?.id
+    })
+
+    // 4. 将 Agent 回复追加到消息列表
+    messages.value.push({
+      role: 'ai',
+      content: response.response,
+      steps: response.steps,
+      intent: response.intent,
+      elapsed_ms: response.elapsed_ms
+    })
+
+  } catch (error: any) {
+    console.error('Agent API Error:', error)
+    
+    // 处理认证错误
+    if (error.response?.status === 401) {
+      showToast('登录已过期，请重新登录')
+      localStorage.removeItem('token')
+      router.push('/login')
+      isOpen.value = false
+      return
+    }
+    
+    // 显示错误消息
+    const errorMsg = error.response?.data?.detail || error.message || '请求失败，请稍后重试'
+    messages.value.push({
+      role: 'ai',
+      content: `抱歉，发生了错误：${errorMsg}`,
+      isError: true
+    })
+    showToast('Agent 请求失败')
+  } finally {
+    isTyping.value = false
+    nextTick(scrollToBottom)
+  }
 }
 
 const scrollToBottom = () => {
-  if (chatBodyRef.value) {
-    chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
-  }
+  nextTick(() => {
+    if (chatBodyRef.value) {
+      chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
+    }
+  })
 }
 
 // 点击车辆卡片
 const goDetail = (carId: number) => {
-  isOpen.value = false // 关闭聊天窗
+  isOpen.value = false
   router.push(`/car/${carId}`)
 }
 
-// 组件销毁时断开连接
-onUnmounted(() => {
-  if (socket.value) socket.value.close()
-})
-
-// 监听 Markdown 渲染，防止 XSS (markdown-it 默认转义 html)
+// Markdown 渲染
 const renderMD = (text: string) => {
   return md.render(text || '')
+}
+
+// 格式化意图显示
+const formatIntent = (intent: string | null | undefined): string => {
+  const intentMap: Record<string, string> = {
+    'search': '🔍 找车',
+    'chat': '💬 对话',
+    'calculate': '🧮 计算'
+  }
+  return intent ? (intentMap[intent] || intent) : ''
 }
 </script>
 
@@ -184,7 +183,10 @@ const renderMD = (text: string) => {
           <div class="header-left">
             <span class="avatar">🤖</span>
             <span class="title">Jarvis 智能顾问</span>
-            <span v-if="isTyping" class="typing-dot">...</span>
+            <span v-if="isTyping" class="thinking-indicator">
+              <span class="thinking-dot"></span>
+              <span class="thinking-text">思考中</span>
+            </span>
           </div>
           <van-icon name="arrow-down" @click="toggleWindow" />
         </div>
@@ -211,11 +213,32 @@ const renderMD = (text: string) => {
               <div class="bubble" :class="{ error: msg.isError }">
                 <div v-if="msg.role === 'user'">{{ msg.content }}</div>
                 <div v-else class="markdown-body" v-html="renderMD(msg.content)"></div>
-                <span v-if="isTyping && index === messages.length - 1 && msg.role === 'ai'" class="cursor">|</span>
+              </div>
+
+              <!-- Agent 元数据展示 (小字显示在气泡下方) -->
+              <div v-if="msg.role === 'ai' && msg.steps !== undefined" class="agent-meta">
+                <span v-if="msg.intent" class="meta-item intent">{{ formatIntent(msg.intent) }}</span>
+                <span class="meta-item steps">🧠 Steps: {{ msg.steps }}</span>
+                <span class="meta-item time">⏱️ {{ msg.elapsed_ms }}ms</span>
               </div>
             </div>
 
             <div class="msg-avatar user-avatar" v-if="msg.role === 'user'">ME</div>
+          </div>
+
+          <!-- Loading 状态显示 -->
+          <div v-if="isTyping" class="message-row ai loading-row">
+            <div class="msg-avatar">🤖</div>
+            <div class="msg-content-wrapper">
+              <div class="bubble loading-bubble">
+                <div class="loading-animation">
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                </div>
+                <span class="loading-text">Agent 正在思考...</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -227,7 +250,10 @@ const renderMD = (text: string) => {
               placeholder="告诉我您的需求，如: 20万的SUV..."
               :disabled="isTyping"
           />
-          <button @click="sendMessage" :disabled="!inputText || isTyping">发送</button>
+          <button @click="sendMessage" :disabled="!inputText || isTyping">
+            <span v-if="isTyping" class="btn-loading">⏳</span>
+            <span v-else>发送</span>
+          </button>
         </div>
       </div>
     </transition>
@@ -296,7 +322,28 @@ const renderMD = (text: string) => {
   border-bottom: 1px solid #eee;
 }
 .header-left { display: flex; align-items: center; gap: 8px; font-weight: bold; font-size: 16px; }
-.typing-dot { animation: blink 1s infinite; }
+
+/* 思考中指示器 */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  color: #1989fa;
+  font-weight: normal;
+  font-size: 13px;
+}
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  background: #1989fa;
+  border-radius: 50%;
+  animation: pulse 1s infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1); }
+}
 
 .chat-body { flex: 1; overflow-y: auto; padding: 16px; }
 
@@ -308,6 +355,7 @@ const renderMD = (text: string) => {
   background: #fff; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   font-size: 20px; box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+  flex-shrink: 0;
 }
 .user-avatar { background: #1989fa; color: #fff; font-size: 12px; font-weight: bold; }
 
@@ -325,6 +373,54 @@ const renderMD = (text: string) => {
 .ai .bubble { background: #fff; border-top-left-radius: 2px; color: #333; }
 .user .bubble { background: #1989fa; color: #fff; border-top-right-radius: 2px; }
 .error { color: #ff4d4f; border: 1px solid #ffccc7; background: #fff2f0 !important; }
+
+/* Loading 气泡 */
+.loading-bubble {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(135deg, #f0f7ff, #e6f0ff);
+  border: 1px dashed #1989fa;
+}
+.loading-animation {
+  display: flex;
+  gap: 4px;
+}
+.loading-animation .dot {
+  width: 8px;
+  height: 8px;
+  background: #1989fa;
+  border-radius: 50%;
+  animation: bounce 1.4s ease-in-out infinite both;
+}
+.loading-animation .dot:nth-child(1) { animation-delay: -0.32s; }
+.loading-animation .dot:nth-child(2) { animation-delay: -0.16s; }
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
+  40% { transform: scale(1); opacity: 1; }
+}
+.loading-text {
+  color: #1989fa;
+  font-size: 14px;
+}
+
+/* Agent 元数据 (小字显示在气泡下方) */
+.agent-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: #999;
+  padding: 0 4px;
+}
+.meta-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.meta-item.intent {
+  color: #1989fa;
+  font-weight: 500;
+}
 
 /* Markdown 样式微调 */
 :deep(.markdown-body p) { margin: 0 0 8px 0; }
@@ -355,7 +451,6 @@ const renderMD = (text: string) => {
   border-top: 1px solid #eee;
   display: flex;
   gap: 10px;
-  /* 适配 iPhone 底部安全区 */
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
 .chat-footer input {
@@ -371,8 +466,10 @@ const renderMD = (text: string) => {
   border: none; border-radius: 20px;
   padding: 0 20px;
   font-weight: bold;
+  min-width: 60px;
 }
 .chat-footer button:disabled { opacity: 0.5; }
+.btn-loading { font-size: 16px; }
 
 .mask {
   position: fixed;
@@ -384,6 +481,4 @@ const renderMD = (text: string) => {
 /* 动画 */
 .slide-up-enter-active, .slide-up-leave-active { transition: transform 0.3s ease; }
 .slide-up-enter-from, .slide-up-leave-to { transform: translateY(100%); }
-.cursor { animation: blink 1s infinite; }
-@keyframes blink { 50% { opacity: 0; } }
 </style>

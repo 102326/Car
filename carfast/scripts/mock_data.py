@@ -10,7 +10,7 @@ from app.config import settings
 from elasticsearch import AsyncElasticsearch, helpers
 
 # 目标数据量 (5万条足以把3个节点跑热)
-TARGET_COUNT = 50000
+TARGET_COUNT = 800000
 BATCH_SIZE = 2000
 
 # 基础词库

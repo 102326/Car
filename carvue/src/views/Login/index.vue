@@ -69,22 +69,20 @@ const sendCode = () => {
   }, 1000)
 }
 
-// 2. 构造请求 Payload (Factory Pattern)
+// 2. 构造请求 Payload (Factory Pattern) - 扁平化结构
 const createLoginRequest = (): ILoginRequest | null => {
   switch (activeTab.value) {
     case 'sms':
       return {
         login_type: 'sms',
-        payload: { phone: form.phone, code: form.code }
+        phone: form.phone,
+        code: form.code
       }
     case 'password':
       return {
         login_type: 'password',
-        // ✅ 修正: 映射 form.username -> payload.account
-        payload: {
-          account: form.username,
-          password: form.password
-        }
+        account: form.username,
+        password: form.password
       }
     case 'dingtalk':
       return null
@@ -111,19 +109,20 @@ const handleLogin = async () => {
     const res = await login(requestBody)
     toast.close()
 
-    // 假设后端返回标准结构 { code: 200, data: { ... } }
-    if (res.data.code === 200 && res.data.data) {
-      const { access_token } = res.data.data
+    // 后端直接返回 Token: { access_token, token_type, user_name }
+    // Axios 包装后在 res.data 中
+    const { access_token, user_name } = res.data
 
+    if (access_token) {
       // 存储 Token
       localStorage.setItem('token', access_token)
-      showToast({ type: 'success', message: '登录成功' })
+      showToast({ type: 'success', message: `欢迎, ${user_name || '用户'}` })
 
       // 跳转
       const redirect = route.query.redirect as string || '/mine'
       router.replace(redirect)
     } else {
-      showToast(res.data.msg || '登录失败')
+      showToast('登录失败：未获取到凭证')
     }
   } catch (error: any) {
     toast.close()

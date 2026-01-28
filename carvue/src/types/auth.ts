@@ -1,38 +1,32 @@
 // 对应后端的 AuthFactory 策略 Key
 export type LoginType = 'password' | 'sms' | 'dingtalk'
 
-// 基础 Payload 接口
-export interface IAuthPayload {
-    [key: string]: any
-}
-
-// 策略 1: 账密登录 Payload
-export interface IPasswordPayload extends IAuthPayload {
-    account: string  // ✅ 修正: username -> account
-    password: string
-}
-
-// 策略 2: 短信验证码 Payload
-export interface ISmsPayload extends IAuthPayload {
-    phone: string
-    code: string
-}
-
-// 策略 3: 钉钉登录 Payload
-export interface IDingTalkPayload extends IAuthPayload {
-    auth_code: string
-}
-
-// 统一提交给后端 /api/v1/auth/login 的结构
+/**
+ * 统一登录请求结构 (扁平化，与后端 LoginParam 严格对应)
+ * 后端 Schema: carfast/app/schemas/auth.py -> LoginParam
+ */
 export interface ILoginRequest {
     login_type: LoginType
-    payload: IPasswordPayload | ISmsPayload | IDingTalkPayload
+    // 密码登录字段
+    account?: string   // 账号(手机/邮箱)
+    password?: string  // 密码
+    // 短信/钉钉登录字段
+    phone?: string     // 手机号
+    code?: string      // 验证码/钉钉Code
 }
 
-// 登录响应结构 (Token)
+// 登录响应结构 (对应后端 Token)
 export interface ILoginResponse {
     access_token: string
-    refresh_token: string
-    login_type: string
-    user_id: number
+    token_type: string
+    user_name: string
+}
+
+// 用户信息响应 (对应后端 UserInfo)
+export interface IUserInfo {
+    id: number
+    username?: string
+    nickname?: string
+    avatar?: string
+    roles: string[]
 }

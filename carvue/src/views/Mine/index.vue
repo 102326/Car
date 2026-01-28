@@ -41,21 +41,21 @@ const checkLogin = async () => {
     isLogin.value = true
 
     try {
-      const { data } = await getUserInfo()
-      if (data.code === 200 && data.data) {
-        const u = data.data
+      const res = await getUserInfo()
+      // 后端直接返回 UserInfo: { id, username, nickname, avatar, roles }
+      // Axios 包装后在 res.data 中
+      const u = res.data
+      if (u?.id) {
         userInfo.value = {
-          nickname: u.nickname,
+          nickname: u.nickname || u.username || '用户',
           avatar: u.avatar || 'https://via.placeholder.com/80x80',
-          level: u.vip_level || 1,
+          level: 1,
           coins: 0,
           following: 0,
           followers: 0
         }
         // 只有获取用户信息成功了，才去加载足迹和收藏
         loadData()
-      } else {
-        throw new Error(data.msg || '获取用户信息失败')
       }
     } catch (error: any) {
       console.error('鉴权失败:', error)

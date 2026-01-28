@@ -61,8 +61,8 @@ async def login(
     if not user:
         raise HTTPException(status_code=401, detail="认证失败")
 
-    # 3. 签发 JWT
-    access_token = MyJWT.create_token(str(user.id))
+    # 3. 签发 JWT (使用正确的异步方法)
+    access_token, refresh_token = await MyJWT.login_user(user.id)
 
     # 4. 获取客户端 IP (用于风控)
     client_ip = request.client.host if request.client else "unknown"
@@ -83,10 +83,13 @@ async def login(
         ip=client_ip
     )
 
+    # 构建用户显示名 (UserAuth 模型只有 phone, 没有 username)
+    display_name = f"用户{user.phone[-4:]}" if user.phone else "匿名用户"
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user_name": user.username or user.phone or "未命名用户"
+        "user_name": display_name
     }
 
 
@@ -115,13 +118,13 @@ async def get_current_user(
     if not user:
         raise HTTPException(status_code=401, detail="用户不存在")
 
-    # 3. 构造返回
+    # 3. 构造返回 (UserAuth 模型字段: id, phone, email, status)
     display_name = f"用户{user.phone[-4:]}" if user.phone else "匿名用户"
 
     return {
         "id": user.id,
-        "username": user.username,
-        "nickname": getattr(user, "nickname", display_name),
-        "avatar": user.avatar,
+        "username": user.phone,  # UserAuth 没有 username，使用 phone
+        "nickname": display_name,
+        "avatar": None,  # UserAuth 没有 avatar 字段
         "roles": ["user"]
     }

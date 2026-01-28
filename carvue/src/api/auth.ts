@@ -1,6 +1,5 @@
 import axios from 'axios'
-import type { IApiResponse } from '@/types'
-import type { ILoginRequest, ILoginResponse } from '@/types/auth'
+import type { ILoginRequest, ILoginResponse, IUserInfo } from '@/types/auth'
 
 const request = axios.create({
     baseURL: '/api/v1',
@@ -21,10 +20,10 @@ request.interceptors.request.use((config) => {
 /**
  * 统一登录接口
  * 支持 password, sms, dingtalk 等多种策略
+ * 后端直接返回 Token: { access_token, token_type, user_name }
  */
 export const login = (data: ILoginRequest) => {
-    // 泛型指定：返回结构是 IApiResponse<ILoginResponse>
-    return request.post<IApiResponse<ILoginResponse>>('/auth/login', data)
+    return request.post<ILoginResponse>('/auth/login', data)
 }
 
 // 预留：获取钉钉跳转 URL (如果需要后端生成)
@@ -32,6 +31,10 @@ export const getDingTalkRedirect = () => {
     return request.get<{ url: string }>('/auth/dingtalk/url')
 }
 
+/**
+ * 获取当前登录用户信息
+ * 后端直接返回 UserInfo: { id, username, nickname, avatar, roles }
+ */
 export const getUserInfo = () => {
-    return request.get<IApiResponse<any>>('/auth/me')
+    return request.get<IUserInfo>('/auth/me')
 }

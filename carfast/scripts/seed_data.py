@@ -1,226 +1,494 @@
+#!/usr/bin/env python3
+"""
+==============================================================================
+ CarFast 数据种子脚本 - 批量填充 PostgreSQL 和 Elasticsearch
+==============================================================================
+
+用途:
+    向数据库和搜索引擎中批量插入真实的汽车数据，使 Agent 可以搜索到实际车辆。
+
+依赖安装:
+    pip install faker sqlalchemy asyncpg elasticsearch
+
+运行方式:
+    # 在 carfast 目录下执行
+    python scripts/seed_data.py
+    
+    # 可选参数
+    python scripts/seed_data.py --clean  # 先清空旧数据再插入
+    python scripts/seed_data.py --es-only  # 仅同步ES (假设PG已有数据)
+
+Author: Antigravity
+Date: 2026-01-28
+"""
+
+import sys
 import asyncio
 import random
+import logging
+from pathlib import Path
+from datetime import datetime
 from decimal import Decimal
+from typing import List
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+# 添加项目根目录到 sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from faker import Faker
+from sqlalchemy import select, delete, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-# =========================================================================
-# 1. 导入你的模型 (请根据实际文件路径调整此处导入)
-# =========================================================================
-# 假设你的模型都在 app.models 模块下，或者你将之前的代码保存为了 models.py
-
-from app.models.user import UserAuth, UserProfile, UserAddress
+from app.core.database import AsyncSessionLocal
+from app.core.es import es_client
 from app.models.car import CarBrand, CarSeries, CarModel, CarDealer
-from app.models.Content_Resource import UsedCarListing, CMSPost
+from app.models.user import UserAuth, UserProfile
+from app.services.es_service import CarESService
 
-# =========================================================================
-# 2. 配置数据库连接
-# =========================================================================
-DATABASE_URL = "postgresql+asyncpg://postgres:123456@47.94.10.217/car"
-
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-    connect_args={
-        "server_settings": {
-            # 意思: "先去 car 模式找，找不到再去 public 找"
-            "search_path": "car,public"
-        }
-    }
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%H:%M:%S"
 )
-AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-fake = Faker("zh_CN")  # 使用中文语言包
+logger = logging.getLogger(__name__)
 
-# =========================================================================
-# 3. 静态字典数据 (为了让App看起来真实，核心汽车数据不使用随机生成)
-# =========================================================================
-REAL_CARS = {
-    "比亚迪": {
-        "logo": "https://img.yiche.com/byd_logo.png",
+fake = Faker("zh_CN")
+
+
+# ==============================================================================
+# 🔧 序列重置 (解决 duplicate key 问题)
+# ==============================================================================
+
+async def reset_sequences(db: AsyncSession):
+    """
+    重置 PostgreSQL 序列，解决 ID 冲突问题
+    在插入数据前调用，确保序列值 > 现有最大 ID
+    """
+    tables = ["car_brand", "car_series", "car_model"]
+    
+    for table in tables:
+        try:
+            sql = text(f"""
+                SELECT setval(
+                    pg_get_serial_sequence('{table}', 'id'), 
+                    COALESCE((SELECT MAX(id) FROM {table}), 0) + 1, 
+                    false
+                )
+            """)
+            await db.execute(sql)
+            logger.info(f"🔄 已重置序列: {table}")
+        except Exception as e:
+            # 如果表不存在或序列不存在，忽略错误
+            logger.warning(f"⚠️ 序列重置跳过 {table}: {e}")
+    
+    await db.commit()
+
+# ==============================================================================
+# 📦 真实车辆数据源 (包含真实价格区间)
+# ==============================================================================
+
+CAR_DATA = {
+    "奥迪": {
+        "country": "德国",
+        "name_en": "Audi",
+        "logo_url": "https://img.autohome.com.cn/logo/brand/1.png",
+        "first_letter": "A",
         "series": {
-            "秦PLUS": ["2025款 DM-i 55KM 领先型", "2025款 EV 500KM 尊贵型"],
-            "汉": ["2026款 DM-p 战神版", "2026款 EV 创世版"],
-            "宋PLUS": ["2025款 DM-i 110KM 旗舰型"]
+            "A4L": {
+                "level": "中型车",
+                "energy_type": "燃油",
+                "price_range": (30, 42),
+                "models": [
+                    ("2024款 40 TFSI 时尚动感型", 31.28),
+                    ("2024款 45 TFSI quattro 豪华型", 36.58),
+                    ("2024款 45 TFSI quattro 旗舰型", 41.28),
+                ]
+            },
+            "A6L": {
+                "level": "中大型车",
+                "energy_type": "燃油",
+                "price_range": (42, 65),
+                "models": [
+                    ("2024款 45 TFSI 臻选动感型", 43.58),
+                    ("2024款 55 TFSI quattro 旗舰型", 55.08),
+                    ("2024款 55 TFSI quattro 尊享型", 64.88),
+                ]
+            },
+            "Q5L": {
+                "level": "中型SUV",
+                "energy_type": "燃油",
+                "price_range": (40, 52),
+                "models": [
+                    ("2024款 40 TFSI 荣享进取型", 40.08),
+                    ("2024款 45 TFSI quattro 豪华动感型", 46.58),
+                    ("2024款 45 TFSI quattro 尊享型", 51.92),
+                ]
+            },
         }
     },
-    "奥迪": {
-        "logo": "https://img.yiche.com/audi_logo.png",
+    "宝马": {
+        "country": "德国",
+        "name_en": "BMW",
+        "logo_url": "https://img.autohome.com.cn/logo/brand/2.png",
+        "first_letter": "B",
         "series": {
-            "奥迪A4L": ["2026款 40 TFSI 时尚动感型", "2026款 45 TFSI 臻选动感型"],
-            "奥迪Q5L": ["2025款 40 TFSI 豪华动感型"]
+            "3系": {
+                "level": "中型车",
+                "energy_type": "燃油",
+                "price_range": (29, 40),
+                "models": [
+                    ("2024款 325i M运动曜夜套装", 30.89),
+                    ("2024款 330i M运动曜夜套装", 35.89),
+                    ("2024款 325Li xDrive M运动曜夜套装", 39.89),
+                ]
+            },
+            "5系": {
+                "level": "中大型车",
+                "energy_type": "燃油",
+                "price_range": (44, 60),
+                "models": [
+                    ("2024款 525Li 豪华套装", 44.99),
+                    ("2024款 530Li xDrive 豪华套装", 50.99),
+                    ("2024款 540Li xDrive 尊享型", 59.99),
+                ]
+            },
+            "X3": {
+                "level": "中型SUV",
+                "energy_type": "燃油",
+                "price_range": (40, 50),
+                "models": [
+                    ("2024款 xDrive25i 领先型", 40.50),
+                    ("2024款 xDrive30i 领先型 M曜夜", 46.58),
+                    ("2024款 xDrive30i 尊享型 M曜夜", 49.98),
+                ]
+            },
+        }
+    },
+    "奔驰": {
+        "country": "德国",
+        "name_en": "Mercedes-Benz",
+        "logo_url": "https://img.autohome.com.cn/logo/brand/3.png",
+        "first_letter": "B",
+        "series": {
+            "C级": {
+                "level": "中型车",
+                "energy_type": "燃油",
+                "price_range": (33, 45),
+                "models": [
+                    ("2024款 C 200 L 运动版", 33.98),
+                    ("2024款 C 260 L 运动版", 38.92),
+                    ("2024款 C 300 L 4MATIC 运动版", 44.92),
+                ]
+            },
+            "E级": {
+                "level": "中大型车",
+                "energy_type": "燃油",
+                "price_range": (45, 60),
+                "models": [
+                    ("2024款 E 260 L 运动型", 45.72),
+                    ("2024款 E 300 L 运动型", 52.42),
+                    ("2024款 E 300 L 4MATIC 豪华型", 59.88),
+                ]
+            },
+            "GLC": {
+                "level": "中型SUV",
+                "energy_type": "燃油",
+                "price_range": (42, 55),
+                "models": [
+                    ("2024款 GLC 260 L 4MATIC 动感型", 42.78),
+                    ("2024款 GLC 300 L 4MATIC 动感型", 48.52),
+                    ("2024款 GLC 300 L 4MATIC AMG-Line", 54.12),
+                ]
+            },
         }
     },
     "特斯拉": {
-        "logo": "https://img.yiche.com/tesla_logo.png",
+        "country": "美国",
+        "name_en": "Tesla",
+        "logo_url": "https://img.autohome.com.cn/logo/brand/tesla.png",
+        "first_letter": "T",
         "series": {
-            "Model 3": ["2026款 后轮驱动焕新版", "2026款 长续航全轮驱动版"],
-            "Model Y": ["2026款 后轮驱动版", "2026款 Performance高性能版"]
+            "Model 3": {
+                "level": "中型车",
+                "energy_type": "纯电",
+                "price_range": (24, 34),
+                "models": [
+                    ("2024款 后驱 焕新版", 24.59),
+                    ("2024款 长续航 全轮驱动焕新版", 29.59),
+                    ("2024款 Performance 高性能焕新版", 33.59),
+                ]
+            },
+            "Model Y": {
+                "level": "中型SUV",
+                "energy_type": "纯电",
+                "price_range": (26, 38),
+                "models": [
+                    ("2024款 后驱版", 26.39),
+                    ("2024款 长续航全轮驱动版", 30.99),
+                    ("2024款 Performance 高性能版", 37.99),
+                ]
+            },
         }
-    }
+    },
+    "比亚迪": {
+        "country": "中国",
+        "name_en": "BYD",
+        "logo_url": "https://img.autohome.com.cn/logo/brand/byd.png",
+        "first_letter": "B",
+        "series": {
+            "秦PLUS": {
+                "level": "紧凑型车",
+                "energy_type": "插混",
+                "price_range": (10, 15),
+                "models": [
+                    ("2024款 DM-i 冠军版 55km 领先型", 9.98),
+                    ("2024款 DM-i 冠军版 120km 旗舰型", 13.98),
+                ]
+            },
+            "汉": {
+                "level": "中大型车",
+                "energy_type": "插混",
+                "price_range": (20, 35),
+                "models": [
+                    ("2024款 DM-i 冠军版 121km 尊贵型", 21.98),
+                    ("2024款 DM-p 战神版 202km 四驱尊享型", 28.98),
+                    ("2024款 EV 冠军版 715km 旗舰型", 32.98),
+                ]
+            },
+            "唐": {
+                "level": "中型SUV",
+                "energy_type": "插混",
+                "price_range": (21, 33),
+                "models": [
+                    ("2024款 DM-i 冠军版 112km 尊享型", 21.48),
+                    ("2024款 DM-p 战神版 215km 四驱旗舰型", 28.98),
+                ]
+            },
+        }
+    },
+    "理想": {
+        "country": "中国",
+        "name_en": "Li Auto",
+        "logo_url": "https://img.autohome.com.cn/logo/brand/lixiang.png",
+        "first_letter": "L",
+        "series": {
+            "L7": {
+                "level": "中大型SUV",
+                "energy_type": "增程",
+                "price_range": (33, 42),
+                "models": [
+                    ("2024款 Pro", 33.98),
+                    ("2024款 Max", 37.98),
+                    ("2024款 Ultra", 41.98),
+                ]
+            },
+            "L8": {
+                "level": "中大型SUV",
+                "energy_type": "增程",
+                "price_range": (35, 44),
+                "models": [
+                    ("2024款 Pro", 35.98),
+                    ("2024款 Max", 39.98),
+                ]
+            },
+            "L9": {
+                "level": "大型SUV",
+                "energy_type": "增程",
+                "price_range": (43, 48),
+                "models": [
+                    ("2024款 Pro", 43.98),
+                    ("2024款 Max", 47.98),
+                ]
+            },
+        }
+    },
 }
 
+# 营销标签池 (Agent 可以匹配这些标签)
+TAG_POOL = ["省油", "推背感", "家用", "商务", "保值", "准新车", 
+            "高颜值", "空间大", "智能驾驶", "舒适静谧", "操控好", "动力强"]
 
-async def seed_cars(session: AsyncSession):
-    print("🚗 正在生成真实汽车品牌库...")
-    brands_map = {}
-    series_map = {}
-    models_list = []
 
-    for brand_name, data in REAL_CARS.items():
-        # 创建品牌
+# ==============================================================================
+# 🔧 数据库操作
+# ==============================================================================
+
+async def ensure_brand(db: AsyncSession, brand_name: str, brand_data: dict) -> CarBrand:
+    """确保品牌存在"""
+    result = await db.execute(select(CarBrand).where(CarBrand.name == brand_name))
+    brand = result.scalar_one_or_none()
+    
+    if not brand:
         brand = CarBrand(
             name=brand_name,
-            logo_url=data["logo"],
-            first_letter=fake.random_element(["A", "B", "T"]),  # 简化处理
-            hot_rank=random.randint(1, 100)
+            name_en=brand_data.get("name_en"),
+            logo_url=brand_data.get("logo_url", ""),
+            first_letter=brand_data.get("first_letter", brand_name[0].upper()),
+            country=brand_data.get("country"),
+            hot_rank=random.randint(50, 100)
         )
-        session.add(brand)
-        await session.flush()  # 获取ID
-        brands_map[brand_name] = brand
+        db.add(brand)
+        await db.flush()
+        logger.info(f"✅ 创建品牌: {brand_name} (ID: {brand.id})")
+    else:
+        logger.info(f"⏭️ 品牌已存在: {brand_name} (ID: {brand.id})")
+    
+    return brand
 
-        # 创建车系
-        for series_name, model_names in data["series"].items():
-            series = CarSeries(
-                brand_id=brand.id,
-                name=series_name,
-                level=random.choice(["紧凑型车", "中型SUV", "中大型车"]),
-                energy_type=random.choice(["插电混动", "纯电", "燃油"]),
-                min_price_guidance=Decimal(random.uniform(10, 20)),
-                max_price_guidance=Decimal(random.uniform(25, 40))
+
+async def ensure_series(db: AsyncSession, brand: CarBrand, series_name: str, series_data: dict) -> CarSeries:
+    """确保车系存在"""
+    result = await db.execute(
+        select(CarSeries).where(CarSeries.brand_id == brand.id, CarSeries.name == series_name)
+    )
+    series = result.scalar_one_or_none()
+    
+    if not series:
+        min_price, max_price = series_data["price_range"]
+        series = CarSeries(
+            brand_id=brand.id,
+            name=series_name,
+            level=series_data["level"],
+            energy_type=series_data["energy_type"],
+            min_price_guidance=Decimal(str(min_price)),
+            max_price_guidance=Decimal(str(max_price))
+        )
+        db.add(series)
+        await db.flush()
+        logger.info(f"  ✅ 创建车系: {series_name} (ID: {series.id})")
+    else:
+        logger.info(f"  ⏭️ 车系已存在: {series_name} (ID: {series.id})")
+    
+    return series
+
+
+async def create_models(db: AsyncSession, brand: CarBrand, series: CarSeries, models_data: list) -> List[dict]:
+    """创建车型，返回 ES 文档"""
+    es_docs = []
+    
+    for model_name, price in models_data:
+        result = await db.execute(
+            select(CarModel).where(CarModel.series_id == series.id, CarModel.name == model_name)
+        )
+        existing = result.scalar_one_or_none()
+        
+        tags = random.sample(TAG_POOL, k=random.randint(2, 4))
+        
+        if existing:
+            car_id = existing.id
+            tags = existing.extra_tags.get("tags", tags) if existing.extra_tags else tags
+        else:
+            model = CarModel(
+                series_id=series.id,
+                name=model_name,
+                year=model_name[:4],
+                price_guidance=Decimal(str(price)),
+                status=1,
+                extra_tags={"tags": tags}
             )
-            session.add(series)
-            await session.flush()
-            series_map[series_name] = series
-
-            # 创建车型
-            for model_name in model_names:
-                model = CarModel(
-                    series_id=series.id,
-                    name=model_name,
-                    year="2026",
-                    price_guidance=Decimal(random.uniform(12, 35)),
-                    status=1,
-                    extra_tags={"subsidy": random.choice([0, 5000, 10000])}
-                )
-                session.add(model)
-                models_list.append(model)
-
-    print(f"✅ 完成：{len(brands_map)} 个品牌, {len(series_map)} 个车系, {len(models_list)} 款车型")
-    return models_list
-
-
-async def seed_users(session: AsyncSession, count=20):
-    print(f"👤 正在生成 {count} 个模拟用户...")
-    users = []
-    for _ in range(count):
-        # 创建 Auth
-        user_auth = UserAuth(
-            phone=fake.phone_number(),
-            email=fake.email(),
-            status=1
-        )
-        session.add(user_auth)
-        await session.flush()
-
-        # 创建 Profile
-        profile = UserProfile(
-            user_id=user_auth.id,
-            nickname=fake.name(),
-            avatar_url=f"https://api.dicebear.com/7.x/avataaars/svg?seed={user_auth.id}",
-            bio=fake.sentence(),
-            level=random.randint(1, 10),
-            is_dealer=random.choice([True, False])
-        )
-        session.add(profile)
-        users.append(user_auth)
-
-        # 顺便给部分用户加个地址
-        if random.random() > 0.5:
-            addr = UserAddress(
-                user_id=user_auth.id,
-                contact_name=profile.nickname,
-                contact_phone=user_auth.phone,
-                province=fake.province(),
-                city=fake.city(),
-                detail_addr=fake.street_address(),
-                is_default=True
-            )
-            session.add(addr)
-
-    print("✅ 用户生成完毕")
-    return users
+            db.add(model)
+            await db.flush()
+            car_id = model.id
+            logger.info(f"    ✅ 创建款型: {model_name} (ID: {car_id})")
+        
+        # ES 文档
+        es_docs.append({
+            "id": car_id,
+            "name": f"{brand.name} {series.name} {model_name}",
+            "brand_name": brand.name,
+            "series_name": series.name,
+            "series_level": series.level,
+            "energy_type": series.energy_type,
+            "price": float(price),
+            "year": model_name[:4],
+            "status": 1,
+            "tags_text": " ".join(tags),
+            "updated_at": datetime.utcnow().isoformat()
+        })
+    
+    return es_docs
 
 
-async def seed_used_cars(session: AsyncSession, users, models, count=30):
-    print(f"💰 正在上架 {count} 辆二手车...")
-    for _ in range(count):
-        seller = random.choice(users)
-        car = random.choice(models)
-
-        listing = UsedCarListing(
-            seller_id=seller.id,
-            car_model_id=car.id,
-            price=car.price_guidance * Decimal(0.7),  # 打7折
-            mileage=Decimal(random.uniform(0.5, 8.0)),
-            reg_date=fake.date_time_between(start_date="-3y", end_date="-1y"),
-            city=fake.city_name(),
-            description=fake.text(max_nb_chars=50),
-            status=1
-        )
-        session.add(listing)
-    print("✅ 二手车上架完毕")
+async def clean_existing_data(db: AsyncSession):
+    """清空旧数据"""
+    logger.warning("🗑️ 清空现有车型数据...")
+    await db.execute(delete(CarModel))
+    await db.execute(delete(CarSeries))
+    await db.execute(delete(CarBrand))
+    await db.commit()
+    logger.info("✅ PostgreSQL 数据已清空")
+    
+    client = es_client.get_client()
+    try:
+        await client.indices.delete(index=CarESService.INDEX_NAME, ignore_unavailable=True)
+        logger.info(f"✅ Elasticsearch 索引 {CarESService.INDEX_NAME} 已删除")
+    except Exception as e:
+        logger.warning(f"⚠️ ES 索引删除失败: {e}")
 
 
-async def seed_posts(session: AsyncSession, users, count=50):
-    print(f"📝 正在发布 {count} 篇社区帖子...")
-    for _ in range(count):
-        author = random.choice(users)
-        post = CMSPost(
-            user_id=author.id,
-            title=fake.sentence(nb_words=6),
-            content_body=fake.paragraph(nb_sentences=5),
-            post_type=random.choice(["article", "video"]),
-            view_count=random.randint(100, 50000),
-            like_count=random.randint(10, 2000),
-            ip_location=fake.province()
-        )
-        session.add(post)
-    print("✅ 帖子发布完毕")
+# ==============================================================================
+# 🚀 主流程
+# ==============================================================================
+
+async def seed_data(clean: bool = False, es_only: bool = False):
+    """主数据填充流程"""
+    logger.info("=" * 60)
+    logger.info("🌱 CarFast 数据种子脚本启动")
+    logger.info("=" * 60)
+    
+    all_es_docs = []
+    
+    try:
+        async with AsyncSessionLocal() as db:
+            # 1. 关键：先重置序列，防止 ID 冲突
+            await reset_sequences(db)
+
+            if clean:
+                await clean_existing_data(db)
+                # clean 后再次重置序列以防万一
+                await reset_sequences(db)
+            
+            await CarESService.create_index_if_not_exists()
+            
+            for brand_name, brand_data in CAR_DATA.items():
+                brand = await ensure_brand(db, brand_name, brand_data)
+                
+                for series_name, series_data in brand_data["series"].items():
+                    series = await ensure_series(db, brand, series_name, series_data)
+                    es_docs = await create_models(db, brand, series, series_data["models"])
+                    all_es_docs.extend(es_docs)
+            
+            if not es_only:
+                await db.commit()
+                logger.info("✅ PostgreSQL 数据提交完成")
+        
+        if all_es_docs:
+            logger.info(f"📤 同步 {len(all_es_docs)} 条文档到 Elasticsearch...")
+            failed = await CarESService.bulk_sync_cars(all_es_docs)
+            if failed:
+                logger.error(f"❌ ES 同步失败 {len(failed)} 条: {failed}")
+            else:
+                logger.info("✅ Elasticsearch 同步完成")
+                
+    finally:
+        # 2. 确保资源释放
+        await es_client.close()
+    
+    logger.info("=" * 60)
+    logger.info(f"🎉 完成! 品牌: {len(CAR_DATA)}, 车型: {len(all_es_docs)}")
+    logger.info("=" * 60)
 
 
-async def main():
-    async with AsyncSessionLocal() as session:
-        async with session.begin():
-            # 1. 基础车型数据
-            models = await seed_cars(session)
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="CarFast 数据种子脚本")
+    parser.add_argument("--clean", action="store_true", help="先清空旧数据再插入")
+    parser.add_argument("--es-only", action="store_true", help="仅同步ES")
+    args = parser.parse_args()
+    
+    asyncio.run(seed_data(clean=args.clean, es_only=args.es_only))
 
-            # 2. 用户数据
-            users = await seed_users(session, count=20)
-
-            # 3. 业务数据
-            await seed_used_cars(session, users, models, count=30)
-            await seed_posts(session, users, count=40)
-
-            # 4. 生成一些经销商
-            print("🏢 生成经销商...")
-            for _ in range(10):
-                dealer = CarDealer(
-                    name=fake.company() + "4S店",
-                    city=fake.city_name(),
-                    phone=fake.phone_number(),
-                    latitude=Decimal(fake.latitude()),
-                    longitude=Decimal(fake.longitude())
-                )
-                session.add(dealer)
-
-        print("\n🎉🎉🎉 所有测试数据写入成功！前端现在有内容展示了！")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("已取消")
-    except Exception as e:
-        print(f"❌ 发生错误: {e}")
+    main()
