@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, END, START
 from langchain_core.messages import AIMessage, SystemMessage
 
 from app.workflows.state import AgentState
-from app.workflows.nodes import identify_intent, execute_search
+from app.workflows.nodes import identify_intent, execute_search, extract_profile
 from app.utils.llm_factory import LLMFactory
 
 logger = logging.getLogger(__name__)
@@ -161,6 +161,11 @@ def build_graph() -> StateGraph:
         START
           │
           ▼
+    ┌─────────────────┐
+    │profile_extractor│
+    └────────┬────────┘
+             │
+             ▼
     ┌─────────────┐
     │intent_router│
     └─────┬───────┘
@@ -178,14 +183,18 @@ def build_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
     
     # ========== Add Nodes ==========
+    workflow.add_node("profile_extractor", extract_profile)
     workflow.add_node("intent_router", identify_intent)
     workflow.add_node("search_executor", execute_search)
     workflow.add_node("chat_generator", chat_generator)
     
     # ========== Add Edges ==========
     
-    # Entry point: START -> intent_router
-    workflow.add_edge(START, "intent_router")
+    # Entry point: START -> profile_extractor
+    workflow.add_edge(START, "profile_extractor")
+    
+    # Flow: profile_extractor -> intent_router
+    workflow.add_edge("profile_extractor", "intent_router")
     
     # Conditional edge: intent_router -> (search_executor | chat_generator)
     workflow.add_conditional_edges(

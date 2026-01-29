@@ -19,6 +19,7 @@ import redis.asyncio as aioredis
 from app.core.database import AsyncSessionLocal
 from app.core.redis import pool as redis_pool
 from app.models.agent_memory import AgentMemoryProfile
+from app.schemas.profile import ProfileUpdateResult
 
 logger = logging.getLogger(__name__)
 
@@ -308,3 +309,73 @@ async def delete_user_profile(user_id: str) -> bool:
     except Exception as e:
         logger.error(f"[MemoryService] DB DELETE failed for user={user_id}: {e}")
         return False
+
+
+async def update_user_profile_partial(user_id: str, update_data: ProfileUpdateResult) -> bool:
+    """
+    基于 LLM 提取结果的部分更新用户画像。
+    
+    Args:
+        user_id: 用户ID
+        update_data: LLM 提取的 ProfileUpdateResult 对象
+        
+    Returns:
+        True 如果有任何更新被应用。
+    """
+    if not user_id or not update_data.has_changed:
+        return False
+
+    # 1. 获取当前画像
+    current_profile = await get_user_profile(user_id)
+    
+    new_data: Dict[str, Any] = {}
+    
+    # 2. 处理品牌更新 (Safe Update)
+    # 仅当 new_brand 有值且不为空时才更新
+    if update_data.new_brand:
+        current_brand = current_profile.get("preference_brand")
+        if update_data.new_brand != current_brand:
+            new_data["preference_brand"] = update_data.new_brand
+            logger.info(f"[MemoryService] Detected brand change: {current_brand} -> {update_data.new_brand}")
+        
+    # 3. 处理预算更新 (Safe Update)
+    if update_data.new_budget_min is not None:
+        new_data["budget_min"] = update_data.new_budget_min
+    
+    if update_data.new_budget_max is not None:
+        new_data["budget_max"] = update_data.new_budget_max
+        
+    # 4. 处理标签更新 (Set Operations)
+    if update_data.tags_to_add or update_data.tags_to_remove:
+        # 注意: Model 字段名为 preference_tags (List)
+        # 确保从 current_profile 获取的是列表，默认为空列表
+        raw_tags = current_profile.get("preference_tags")
+        current_tags = set(raw_tags if isinstance(raw_tags, list) else [])
+        
+        original_tags_count = len(current_tags)
+        
+        # Add new tags
+        if update_data.tags_to_add:
+            current_tags.update(update_data.tags_to_add)
+            
+        # Remove tags
+        if update_data.tags_to_remove:
+            current_tags.difference_update(update_data.tags_to_remove)
+                
+        # 只有当标签集合真正改变时才更新
+        # 简单的长度检查是不够的，还需要检查内容是否变化
+        new_tags_list = list(current_tags)
+        
+        # 检查是否真的需要更新 (内容比较)
+        old_tags_set = set(raw_tags if isinstance(raw_tags, list) else [])
+        if current_tags != old_tags_set:
+            new_data["preference_tags"] = new_tags_list
+            logger.info(f"[MemoryService] Tags updated: +{update_data.tags_to_add} -{update_data.tags_to_remove} => {new_tags_list}")
+    
+    # 5. 如果没有实际变更，直接返回
+    if not new_data:
+        return False
+        
+    # 6. 执行更新
+    # update_user_profile 会处理数据库更新和 Redis 刷新
+    return await update_user_profile(user_id, new_data)

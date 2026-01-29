@@ -12,10 +12,14 @@ from typing import Any, Dict, Optional
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
+
 from app.workflows.state import AgentState
 from app.utils.search_tool import VehicleSearchTool
 from app.utils.llm_factory import LLMFactory
-from app.services.memory_service import get_user_profile_summary
+from app.services.memory_service import get_user_profile_summary, update_user_profile_partial
+from app.schemas.profile import ProfileUpdateResult
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,30 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # System Prompts
 # ============================================================================
+
+PROFILE_EXTRACTION_PROMPT = """你是一个专业的购车顾问助手，专注于从对话中提取用户的购车偏好。
+
+## 任务
+分析用户的最新消息，判断用户是否表达了**修改**购车偏好（品牌、预算、标签）的意图。
+
+## 提取规则
+1. **只提取变更**: 仅当用户明确表达了新的偏好或修改原有偏好时，才设置对应字段。
+2. **Has Changed**: 如果提取到任何变更，必须将 `has_changed` 设为 true。如果只是闲聊或询问车辆信息但未表达偏好变更，设为 false。
+3. **Tags**:
+    - `tags_to_add`: 用户新提到的需求标签（如“想要省油的”，“要有推背感”）。
+    - `tags_to_remove`: 用户明确表示不想要的标签（如“不要电车” -> 可能隐含移除“纯电”标签，或需负面标签处理。此处简化为移除旧偏好）。
+4. **Brand/Budget**: 仅在用户明确指定时提取。
+
+## 示例
+- 用户: "有没有宝马3系？" -> has_changed=True, new_brand="宝马"
+- 用户: "预算大概30万左右" -> has_changed=True, new_budget_min=25, new_budget_max=35 (估算)
+- 用户: "这就太贵了" -> has_changed=False (模糊，不提取)
+- 用户: "我不喜欢奥迪，看看奔驰" -> has_changed=True, new_brand="奔驰"
+- 用户: "你好" -> has_changed=False
+
+## 输出格式
+{format_instructions}
+"""
 
 INTENT_SYSTEM_PROMPT = """你是一个汽车销售助手的意图分析器。
 
@@ -112,6 +140,55 @@ def extract_json_from_response(text: str) -> Optional[Dict[str, Any]]:
 # ============================================================================
 # Node Functions
 # ============================================================================
+
+async def extract_profile(state: AgentState) -> Dict[str, Any]:
+    """
+    Profile Extraction Node: Extract and update user preferences.
+    """
+    logger.info("[Node: extract_profile] Checking for profile updates...")
+    
+    user_id = state.get("user_id")
+    if not user_id:
+        return {}
+        
+    # 只分析最后一条用户消息
+    messages = state.get("messages", [])
+    if not messages:
+        return {}
+        
+    last_message = messages[-1]
+    # 确保是 HumanMessage
+    if not isinstance(last_message, HumanMessage):
+        return {}
+        
+    try:
+        # 使用 PydanticOutputParser 降级方案
+        llm = LLMFactory.get_llm(temperature=0.0)
+        
+        parser = PydanticOutputParser(pydantic_object=ProfileUpdateResult)
+        
+        prompt = PromptTemplate(
+            template=PROFILE_EXTRACTION_PROMPT + "\n用户最新消息: {message}",
+            input_variables=["message"],
+            partial_variables={"format_instructions": parser.get_format_instructions()}
+        )
+        
+        chain = prompt | llm | parser
+        
+        # Invoke
+        result = await chain.ainvoke({"message": last_message.content})
+        
+        if result.has_changed:
+            logger.info(f"[Node: extract_profile] Extracted changes: {result}")
+            await update_user_profile_partial(str(user_id), result)
+            
+            # 这里不直接更新 state，因为 identify_intent 节点会重新读取最新的 profile summary
+            
+    except Exception as e:
+        logger.error(f"[Node: extract_profile] Error: {e}")
+        
+    return {}
+
 
 async def identify_intent(state: AgentState) -> Dict[str, Any]:
     """
