@@ -9,19 +9,32 @@ import logging
 from typing import Any, Dict, Literal
 
 from langgraph.graph import StateGraph, END, START
-from langchain_core.messages import AIMessage, SystemMessage
-
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, BaseMessage
 from app.workflows.state import AgentState
 from app.workflows.nodes import identify_intent, execute_search, extract_profile
 from app.utils.llm_factory import LLMFactory
-
+from app.config import settings
 logger = logging.getLogger(__name__)
 
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_milvus import Milvus
+
+
+try:
+    embeddings = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL_NAME)
+    milvus_store = Milvus(
+        embedding_function=embeddings,
+        collection_name=settings.MILVUS_COLLECTION_KNOWLEDGE,
+        connection_args={"host": settings.MILVUS_HOST, "port": settings.MILVUS_PORT}
+    )
+    knowledge_retriever = milvus_store.as_retriever(search_kwargs={"k": 3})
+except Exception as e:
+    logger.error(f"Milvus 初始化失败: {e}")
+    knowledge_retriever = None
 
 # ============================================================================
 # System Prompts
 # ============================================================================
-
 CHAT_SYSTEM_PROMPT = """你是 CarFast 智能汽车导购助手。
 
 ## 角色定位
@@ -30,96 +43,132 @@ CHAT_SYSTEM_PROMPT = """你是 CarFast 智能汽车导购助手。
 - 能够解答汽车相关的各类问题
 
 ## 回复原则
-1. 简洁明了，避免冗长
-2. 如果有搜索结果，优先基于结果推荐
-3. 引导用户提供更多需求信息（预算、用途、偏好等）
-4. 使用友好的语气，适当使用 emoji
-
-## 特殊情况
-- 如果用户询问计算类问题（分期、保险），礼貌告知该功能即将上线
-- 如果搜索无结果，建议用户调整条件
+1. 必须优先基于提供的【车辆搜索结果】和【行业知识参考】进行回答。
+2. 遇到具体的政策、补贴、评测数据，务必使用【行业知识参考】中的内容，不要使用自己的旧知识编造。
+3. 💡【重要引用规则】：如果你在回答中使用了【行业知识参考】中的任何内容，必须在最终回答的最末尾另起一行，以 Markdown 格式清晰地附上来源。格式示例：“> 参考知识来源：《xxx》”。如果有多个不同来源，请用逗号隔开。
+4. 如果搜索无结果，建议用户调整条件。
+5. 使用友好的语气，适当使用 emoji。
 """
 
+
+# ============================================================================
+# Query Rewrite Helper (新增：查询重写)
+# ============================================================================
+
+async def rewrite_query(messages: list[BaseMessage]) -> str:
+    """
+    结合聊天历史重写用户的最新问题，解决指代消解（Coreference Resolution）问题。
+    """
+    # 过滤出用户的提问
+    human_msgs = [m for m in messages if isinstance(m, HumanMessage)]
+    if not human_msgs:
+        return ""
+
+    last_msg = human_msgs[-1].content
+
+    # 如果只有一轮对话，不需要重写，直接返回
+    if len(messages) <= 2:
+        return last_msg
+
+    try:
+        # 使用低温度的小模型保证输出稳定性
+        llm = LLMFactory.get_llm(temperature=0.1, streaming=False)
+
+        # 截取最近的 4 条消息作为上下文（避免过长）
+        history_text = ""
+        for msg in messages[-5:-1]:
+            role = "用户" if isinstance(msg, HumanMessage) else "AI"
+            history_text += f"{role}: {msg.content[:100]}...\n"  # 截断太长的AI回复
+
+        rewrite_prompt = f"""你的任务是将用户的最新问题，结合前文聊天历史，重写为一个独立的、明确的搜索词。
+规则：
+1. 如果原问题中包含代词（如“它”、“这个”、“那款车”等），请根据历史替换为具体的车型或事物名称。
+2. 如果原问题已经很明确，请直接输出原问题。
+3. 必须且只能输出重写后的句子，绝对不要包含任何多余的解释、标点或前导词。
+
+【聊天历史】：
+{history_text}
+
+【最新问题】：
+{last_msg}
+
+【重写结果】："""
+
+        response = await llm.ainvoke([HumanMessage(content=rewrite_prompt)])
+        rewritten = response.content.strip()
+
+        logger.info(f"[Query Rewrite] 原问题: '{last_msg}' -> 重写后: '{rewritten}'")
+        return rewritten
+    except Exception as e:
+        logger.error(f"[Query Rewrite] 重写失败: {e}")
+        return last_msg  # 降级：如果失败则使用原问题
 
 # ============================================================================
 # Additional Node: Chat Generator
 # ============================================================================
 
 async def chat_generator(state: AgentState) -> Dict[str, Any]:
-    """
-    Chat Generation Node: Generate final response using LLM.
-    
-    This node:
-    1. Gets LLM instance
-    2. Builds context from state (messages + tool_output if available)
-    3. Generates natural language response
-    
-    Args:
-        state: Current agent state.
-        
-    Returns:
-        Dict with 'messages' containing the AI response.
-    """
     logger.info("[Node: chat_generator] Generating response...")
-    
+
     try:
-        # Get LLM instance
-        llm = LLMFactory.get_llm(temperature=0.7, streaming=False)
-        
-        # Build messages for LLM
+        llm = LLMFactory.get_llm(temperature=0.3, streaming=False)
+
         messages = state.get("messages", [])
         tool_output = state.get("tool_output")
         intent = state.get("intent")
-        
-        # Construct prompt messages
-        llm_messages = [
-            SystemMessage(content=CHAT_SYSTEM_PROMPT),
-        ]
-        
-        # Add conversation history
+
+        # 1. 提取用户的最后一次提问 (用于兜底展示)
+        last_user_msg = ""
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage):
+                last_user_msg = msg.content
+                break
+
+        # 2. 【核心升级】：获取重写后的搜索词
+        search_query = await rewrite_query(messages)
+
+        # 3. 检索 Milvus 行业知识 (使用重写后的 search_query)
+        knowledge_context = ""
+        if knowledge_retriever and search_query:
+            try:
+                docs = await knowledge_retriever.ainvoke(search_query)
+                if docs:
+                    # 💡 【核心修改】：在这里把元数据（metadata）里的文件名一起喂给大模型
+                    knowledge_context = "\n".join([
+                        f"- [来源：{doc.metadata.get('source_file', '未知文件')}]\n  内容：{doc.page_content}"
+                        for doc in docs
+                    ])
+            except Exception as e:
+                logger.error(f"Milvus 检索失败: {e}")
+
+        # 4. 构造 Prompt
+        llm_messages = [SystemMessage(content=CHAT_SYSTEM_PROMPT)]
+
         for msg in messages:
             llm_messages.append(msg)
-        
-        # If we have search results, inject them as context
+
         if tool_output:
-            context_msg = SystemMessage(
-                content=f"""## 车辆搜索结果
-以下是根据用户需求查询到的库存信息，请基于此结果为用户提供推荐和建议：
+            llm_messages.append(SystemMessage(
+                content=f"## 车辆搜索结果 (库存)\n{tool_output}"
+            ))
 
-{tool_output}
+        if knowledge_context:
+            llm_messages.append(SystemMessage(
+                content=f"## 行业知识参考 (政策/评测)\n请结合以下最新信息回答：\n{knowledge_context}"
+            ))
 
-请根据上述搜索结果，用自然、友好的语言回复用户。突出精选车源的亮点，并给出购买建议。"""
-            )
-            llm_messages.append(context_msg)
-        
-        # Handle calculate intent (feature not ready)
         if intent == "calculate":
-            llm_messages.append(
-                SystemMessage(content="[系统提示] 用户想要进行费用计算，但该功能暂未上线，请礼貌告知。")
-            )
-        
-        # Invoke LLM
-        logger.debug(f"[Node: chat_generator] Invoking LLM with {len(llm_messages)} messages")
+            llm_messages.append(SystemMessage(content="[系统提示] 用户想要进行费用计算，但该功能暂未上线，请礼貌告知。"))
+
         response = await llm.ainvoke(llm_messages)
-        
-        # Wrap response as AIMessage
         ai_message = AIMessage(content=response.content)
-        
-        logger.info(f"[Node: chat_generator] Response generated, length: {len(response.content)} chars")
-        
-        return {
-            "messages": [ai_message],
-            "step_count": 1
-        }
-        
+
+        return {"messages": [ai_message], "step_count": 1}
+
     except Exception as e:
         error_response = AIMessage(content=f"抱歉，我遇到了一点问题，请稍后再试。({str(e)})")
         logger.error(f"[Node: chat_generator] Error: {e}", exc_info=True)
-        
-        return {
-            "messages": [error_response],
-            "step_count": 1
-        }
+        return {"messages": [error_response], "step_count": 1}
 
 
 # ============================================================================
