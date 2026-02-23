@@ -103,9 +103,12 @@ class AgentState(TypedDict, total=False):
     
     # Router intent classification
     intent: Optional[str]
-    
+
     # LLM-extracted search parameters
     search_params: Optional[Dict[str, Any]]
+
+    # 🌟 新增：LLM-extracted calculate parameters
+    calculate_params: Optional[Dict[str, Any]]
     
     # Tool execution output
     tool_output: Optional[str]

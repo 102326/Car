@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, Base
 
 from app.utils.decorators import async_time_it
 from app.workflows.state import AgentState
-from app.workflows.nodes import identify_intent, execute_search, extract_profile
+from app.workflows.nodes import identify_intent, execute_search, extract_profile, calculate_executor # 🌟 引入新节点
 from app.utils.llm_factory import LLMFactory
 from app.config import settings
 logger = logging.getLogger(__name__)
@@ -151,17 +151,16 @@ async def chat_generator(state: AgentState) -> Dict[str, Any]:
             llm_messages.append(msg)
 
         if tool_output:
+            # 🌟 动态标题：告诉大模型这到底是库存数据，还是算账结果
+            context_title = "车辆搜索结果 (库存)" if intent == "search" else "工具执行结果"
             llm_messages.append(SystemMessage(
-                content=f"## 车辆搜索结果 (库存)\n{tool_output}"
+                content=f"## {context_title}\n{tool_output}"
             ))
 
         if knowledge_context:
             llm_messages.append(SystemMessage(
                 content=f"## 行业知识参考 (政策/评测)\n请结合以下最新信息回答：\n{knowledge_context}"
             ))
-
-        if intent == "calculate":
-            llm_messages.append(SystemMessage(content="[系统提示] 用户想要进行费用计算，但该功能暂未上线，请礼貌告知。"))
 
         response = await llm.ainvoke(llm_messages)
         ai_message = AIMessage(content=response.content)
@@ -194,6 +193,8 @@ def route_by_intent(state: AgentState) -> Literal["search_executor", "chat_gener
     
     if intent == "search":
         return "search_executor"
+    elif intent == "calculate":
+        return "calculate_executor"
     else:
         # Both "chat" and "calculate" go to chat_generator
         # calculate is handled gracefully inside chat_generator
@@ -238,6 +239,7 @@ def build_graph() -> StateGraph:
     workflow.add_node("profile_extractor", extract_profile)
     workflow.add_node("intent_router", identify_intent)
     workflow.add_node("search_executor", execute_search)
+    workflow.add_node("calculate_executor", calculate_executor)  # 🌟 注册节点
     workflow.add_node("chat_generator", chat_generator)
     
     # ========== Add Edges ==========
@@ -254,15 +256,13 @@ def build_graph() -> StateGraph:
         path=route_by_intent,
         path_map={
             "search_executor": "search_executor",
+            "calculate_executor": "calculate_executor",  # 🌟 路由映射
             "chat_generator": "chat_generator"
         }
     )
-    
-    # After search, generate response: search_executor -> chat_generator
+
     workflow.add_edge("search_executor", "chat_generator")
-    
-    # Terminal edge: chat_generator -> END
-    workflow.add_edge("chat_generator", END)
+    workflow.add_edge("calculate_executor", "chat_generator")
     
     logger.info("[Graph] Workflow graph built successfully")
     
