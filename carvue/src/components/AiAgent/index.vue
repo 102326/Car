@@ -8,7 +8,10 @@ import { getUserInfo } from '@/api/auth'
 import type { AgentChatResponse } from '@/api/agent'
 
 const router = useRouter()
-const md = new MarkdownIt()
+const md = new MarkdownIt({
+  breaks: true,
+  linkify: true
+})
 
 // --- 状态定义 ---
 const isOpen = ref(false)         // 窗口开关
@@ -421,12 +424,55 @@ const formatIntent = (intent: string | null | undefined): string => {
   color: #1989fa;
   font-weight: 500;
 }
-
+/* =========================================
+   Markdown 富文本精美渲染
+   ========================================= */
 /* Markdown 样式微调 */
-:deep(.markdown-body p) { margin: 0 0 8px 0; }
-:deep(.markdown-body p:last-child) { margin: 0; }
-:deep(.markdown-body ul) { padding-left: 20px; margin: 4px 0; }
-:deep(.markdown-body strong) { color: #1989fa; }
+:deep(.markdown-body p) {
+  margin: 0 0 8px 0;
+}
+:deep(.markdown-body p:last-child) {
+  margin: 0;
+}
+:deep(.markdown-body strong) {
+  color: #1989fa;
+  font-weight: 600;
+}
+/* 列表美化 */
+:deep(.markdown-body ul), :deep(.markdown-body ol) {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+:deep(.markdown-body li) {
+  margin-bottom: 6px;
+}
+:deep(.markdown-body li::marker) {
+  color: #1989fa;
+}
+
+/* 🌟 核心：美化“参考知识来源”的 Blockquote 引用气泡 */
+:deep(.markdown-body blockquote) {
+  margin: 12px 0 0 0;
+  padding: 10px 14px;
+  background-color: #f0f7ff; /* 浅蓝色背景 */
+  border-left: 4px solid #1989fa; /* 左侧强调线 */
+  border-radius: 0 8px 8px 0;
+  color: #5c82a6;
+  font-size: 12px;
+  line-height: 1.6;
+}
+:deep(.markdown-body blockquote p) {
+  margin: 0 !important;
+}
+/* 在引用前面加一个小书本图标 */
+:deep(.markdown-body blockquote::before) {
+  content: '📚 ';
+}
+
+/* 如果有加粗的重点词，稍微加深一点颜色 */
+:deep(.markdown-body blockquote strong) {
+  color: #2b6aab;
+}
 
 /* 推荐车辆卡片 */
 .car-cards-container { width: 100%; overflow-x: auto; margin-bottom: 4px; }
