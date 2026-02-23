@@ -20,7 +20,7 @@ from app.utils.search_tool import VehicleSearchTool
 from app.utils.llm_factory import LLMFactory
 from app.services.memory_service import get_user_profile_summary, update_user_profile_partial
 from app.schemas.profile import ProfileUpdateResult
-
+from app.utils.decorators import async_time_it
 logger = logging.getLogger(__name__)
 
 
@@ -140,7 +140,7 @@ def extract_json_from_response(text: str) -> Optional[Dict[str, Any]]:
 # ============================================================================
 # Node Functions
 # ============================================================================
-
+@async_time_it
 async def extract_profile(state: AgentState) -> Dict[str, Any]:
     """
     Profile Extraction Node: Extract and update user preferences.
@@ -189,7 +189,7 @@ async def extract_profile(state: AgentState) -> Dict[str, Any]:
         
     return {}
 
-
+@async_time_it
 async def identify_intent(state: AgentState) -> Dict[str, Any]:
     """
     Intent Router Node: Analyze user message and classify intent.
@@ -292,7 +292,7 @@ async def identify_intent(state: AgentState) -> Dict[str, Any]:
         logger.error(f"[Node: identify_intent] Error: {e}", exc_info=True)
         return default_result
 
-
+@async_time_it
 async def execute_search(state: AgentState) -> Dict[str, Any]:
     """
     Tool Execution Node: Execute vehicle search using VehicleSearchTool.

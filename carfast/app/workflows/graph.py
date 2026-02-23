@@ -10,6 +10,8 @@ from typing import Any, Dict, Literal
 
 from langgraph.graph import StateGraph, END, START
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, BaseMessage
+
+from app.utils.decorators import async_time_it
 from app.workflows.state import AgentState
 from app.workflows.nodes import identify_intent, execute_search, extract_profile
 from app.utils.llm_factory import LLMFactory
@@ -107,6 +109,7 @@ async def rewrite_query(messages: list[BaseMessage]) -> str:
 # Additional Node: Chat Generator
 # ============================================================================
 
+@async_time_it
 async def chat_generator(state: AgentState) -> Dict[str, Any]:
     logger.info("[Node: chat_generator] Generating response...")
 
