@@ -111,29 +111,27 @@ async def rewrite_query(messages: list[BaseMessage]) -> str:
 # ============================================================================
 @async_time_it
 async def chat_generator(state: AgentState) -> Dict[str, Any]:
-    """
-    汇聚所有状态 (Intent, Tool Output, RAG Context) 并生成最终回复的话术。
-    """
     logger.info("[Node: chat_generator] Generating response...")
 
     try:
-        # 生成节点允许一定的创造性，温度设为 0.3
         llm = LLMFactory.get_llm(temperature=0.3, streaming=False)
 
         messages = state.get("messages", [])
         tool_output = state.get("tool_output")
         intent = state.get("intent")
 
-        # 1. 执行 Query Rewrite，获取清晰的搜索意图
+        # 🌟 获取风控审核结果
+        critic_decision = state.get("critic_decision")
+        critic_reason = state.get("critic_reason")
+
         search_query = await rewrite_query(messages)
 
-        # 2. 执行 Milvus 向量检索 (RAG)
+        # ... (Milvus RAG 检索部分保持不变) ...
         knowledge_context = ""
         if knowledge_retriever and search_query:
             try:
                 docs = await knowledge_retriever.ainvoke(search_query)
                 if docs:
-                    # 💡 核心：将 Metadata 里的 source_file 一起注入 Prompt，防幻觉且支持溯源
                     knowledge_context = "\n".join([
                         f"- [来源：{doc.metadata.get('source_file', '未知文件')}]\n  内容：{doc.page_content}"
                         for doc in docs
@@ -141,15 +139,26 @@ async def chat_generator(state: AgentState) -> Dict[str, Any]:
             except Exception as e:
                 logger.error(f"Milvus 检索异常: {e}")
 
-        # 3. 组装最终的 LLM Context (Prompt Engineering)
+        # 3. 组装最终的 LLM Context
         llm_messages = [SystemMessage(content=CHAT_SYSTEM_PROMPT)]
 
         for msg in messages:
             llm_messages.append(msg)
 
-        if tool_output:
-            # 根据意图动态调整上下文标题
-            context_title = "车辆库存搜索结果" if intent == "search" else "系统工具与风控审核结果"
+        # ==========================================
+        # 🌟 核心分发：依据风控决策来决定喂给大模型什么数据
+        # ==========================================
+        if critic_decision == "reject":
+            # 如果被风控拦截：强制大模型当坏人，向用户解释原因，并且绝不展示算出来的月供
+            llm_messages.append(SystemMessage(
+                content=f"## 🛑 风控审核拦截通知\n"
+                        f"用户的购车/贷款方案请求已被金融风控系统拦截！\n"
+                        f"拦截原因：{critic_reason}\n\n"
+                        f"【系统强制指令】：请你委婉、礼貌地告知用户该方案无法在现实中获批，并结合拦截原因给出合理的行业建议（例如推荐首付20%以上）。**绝对不要**向用户展示任何系统底层计算出的月供数字，因为该方案本身无效！"
+            ))
+        elif tool_output:
+            # 如果没有被拦截（或者压根没走到风控），正常展示工具输出
+            context_title = "车辆库存搜索结果" if intent == "search" else "系统工具与计算结果"
             llm_messages.append(SystemMessage(
                 content=f"## {context_title}\n{tool_output}"
             ))
@@ -170,6 +179,7 @@ async def chat_generator(state: AgentState) -> Dict[str, Any]:
         logger.error(f"[Node: chat_generator] Error: {e}", exc_info=True)
         return {"messages": [error_response], "step_count": 1}
 
+    
 # ============================================================================
 # 条件路由控制 (Conditional Router)
 # ============================================================================

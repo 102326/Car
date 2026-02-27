@@ -116,6 +116,10 @@ class AgentState(TypedDict, total=False):
     
     # Response quality evaluation
     evaluation_result: Optional[str]
+
+    # 🌟 新增：独立的风控决策字段 (状态隔离)
+    critic_decision: Optional[str]  # "pass" 或 "reject"
+    critic_reason: Optional[str]  # 驳回的具体原因
     
     # Step counter for loop prevention - increment mode
     step_count: Annotated[int, increment_count]

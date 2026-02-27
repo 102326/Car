@@ -233,52 +233,58 @@ async def calculate_executor(state: AgentState) -> Dict[str, Any]:
 
 @async_time_it
 async def calculate_critic(state: AgentState) -> Dict[str, Any]:
-    """反思节点 (Critic)：金融风控与常识审核"""
+    """反思节点 (Critic)：双引擎金融风控 (硬规则 + LLM 语义审核)"""
     logger.info("[Node: calculate_critic] Auditing financial calculation...")
 
     tool_output = state.get("tool_output", "")
     params = state.get("calculate_params") or {}
 
-    # 如果前面计算已经报错了（比如用户没给车价），直接放行，让生成节点去处理异常
+    # 如果前面计算已经报错了，直接放行，让生成节点去处理异常
     if "[计算执行失败]" in tool_output or "[系统提示]" in tool_output:
-        return {"evaluation_result": "pass", "step_count": 1}
+        return {"critic_decision": "pass", "step_count": 1}
 
+    # ==========================================
+    # 🌟 第一重保险：Python 确定性硬规则拦截 (Deterministic)
+    # ==========================================
+    loan_term = params.get("loan_term")
+    down_payment_rate = params.get("down_payment_rate")
+
+    if loan_term and (int(loan_term) > 120 or int(loan_term) < 12):
+        reason = f"贷款期数 {loan_term} 个月不符合现实业务标准 (需在12到120个月之间)。"
+        logger.warning(f"[Critic] 硬规则拦截: {reason}")
+        return {"critic_decision": "reject", "critic_reason": reason, "step_count": 1}
+
+    if down_payment_rate is not None and float(down_payment_rate) < 0.15:
+        reason = f"首付比例 {float(down_payment_rate) * 100}% 过低，金融机构最低要求通常为15%。"
+        logger.warning(f"[Critic] 硬规则拦截: {reason}")
+        return {"critic_decision": "reject", "critic_reason": reason, "step_count": 1}
+
+    # ==========================================
+    # 🌟 第二重保险：LLM 语义与常识拦截 (Probabilistic)
+    # ==========================================
     try:
         llm = LLMFactory.get_llm(temperature=0.0)
         structured_llm = llm.with_structured_output(CriticSchema, method="function_calling")
 
-        # 赋予大模型严谨的风控角色
         prompt = f"""你是一个严谨的汽车金融风控审核员。
-请审查以下车贷计算参数和结果是否符合现实世界的商业逻辑。
-
-【强制审核规则】：
-1. 贷款期数 (loan_term) 必须在 12 到 120 个月之间（最长10年）。如果是几百期，必须拒绝。
-2. 首付比例 (down_payment_rate) 必须大于等于 15% (即 0.15)。零首付风险极高，必须拒绝。
-3. 年化利率一般在 2% 到 10% 之间。
+请审查以下车贷计算参数和结果是否符合现实商业逻辑。
 
 【待审核数据】：
 用户提供的原始参数：{params}
 后台计算出的结果：{tool_output}
 
-如果不符合上述任何一条规则，请坚决输出 reject，并给出具体的理由。如果符合，输出 pass。
-"""
-        # 调用结构化输出进行反思
+如果不符合常识（例如年化利率低得离谱且无免息政策），请坚决输出 reject，并给出具体的理由。如果符合，输出 pass。"""
+
         result: CriticSchema = await structured_llm.ainvoke([HumanMessage(content=prompt)])
 
         if result.decision == "reject":
-            logger.warning(f"[Critic] 审核被系统驳回: {result.reason}")
-            # 🌟 核心拦截：覆盖原有的数学计算结果，把风控警告传给下游聊天节点
-            new_output = (
-                f"[风控审核不通过] 用户的计算请求不切实际，已被系统拦截。\n"
-                f"原因：{result.reason}。\n"
-                f"指令：请你委婉、礼貌地告知用户该贷款方案无法在银行获批，并给出合理的行业建议（如推荐首付20%以上、最长分60期）。绝对不要向用户展示刚才异常的月供数字！"
-            )
-            return {"tool_output": new_output, "evaluation_result": "reject", "step_count": 1}
+            logger.warning(f"[Critic] LLM 审核拦截: {result.reason}")
+            return {"critic_decision": "reject", "critic_reason": result.reason, "step_count": 1}
 
         logger.info("[Critic] 审核通过，参数合理")
-        return {"evaluation_result": "pass", "step_count": 1}
+        return {"critic_decision": "pass", "step_count": 1}
 
     except Exception as e:
         logger.error(f"[Node: calculate_critic] Critic error: {e}", exc_info=True)
-        # 降级策略：审核器挂了，默认放行
-        return {"evaluation_result": "pass", "step_count": 1}
+        # 降级策略：LLM审核器挂了，但硬规则通过了，予以放行
+        return {"critic_decision": "pass", "step_count": 1}
