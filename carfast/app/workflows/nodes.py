@@ -1,6 +1,6 @@
 # app/workflows/nodes.py
 import logging
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Literal
 
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import PromptTemplate
@@ -37,6 +37,9 @@ class IntentClassificationSchema(BaseModel):
     search_params: Optional[SearchParamsSchema] = Field(None, description="当 intent 为 'search' 时提取的参数")
     calculate_params: Optional[CalculateParamsSchema] = Field(None, description="当 intent 为 'calculate' 时提取的参数")
 
+class CriticSchema(BaseModel):
+    decision: Literal["pass", "reject"] = Field(description="审核结果：符合现实商业逻辑为 pass，离谱或不切实际为 reject")
+    reason: Optional[str] = Field(None, description="如果 reject，请给出具体的拒绝理由（给销售看的提示）")
 
 # ============================================================================
 # System Prompts (精简版：去掉了所有关于 JSON 格式的硬性要求)
@@ -226,3 +229,56 @@ async def calculate_executor(state: AgentState) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"[Node: calculate_executor] Error: {e}", exc_info=True)
         return {"tool_output": f"[计算执行失败] 无法完成计算，请稍后重试。({str(e)})", "step_count": 1}
+
+
+@async_time_it
+async def calculate_critic(state: AgentState) -> Dict[str, Any]:
+    """反思节点 (Critic)：金融风控与常识审核"""
+    logger.info("[Node: calculate_critic] Auditing financial calculation...")
+
+    tool_output = state.get("tool_output", "")
+    params = state.get("calculate_params") or {}
+
+    # 如果前面计算已经报错了（比如用户没给车价），直接放行，让生成节点去处理异常
+    if "[计算执行失败]" in tool_output or "[系统提示]" in tool_output:
+        return {"evaluation_result": "pass", "step_count": 1}
+
+    try:
+        llm = LLMFactory.get_llm(temperature=0.0)
+        structured_llm = llm.with_structured_output(CriticSchema, method="function_calling")
+
+        # 赋予大模型严谨的风控角色
+        prompt = f"""你是一个严谨的汽车金融风控审核员。
+请审查以下车贷计算参数和结果是否符合现实世界的商业逻辑。
+
+【强制审核规则】：
+1. 贷款期数 (loan_term) 必须在 12 到 120 个月之间（最长10年）。如果是几百期，必须拒绝。
+2. 首付比例 (down_payment_rate) 必须大于等于 15% (即 0.15)。零首付风险极高，必须拒绝。
+3. 年化利率一般在 2% 到 10% 之间。
+
+【待审核数据】：
+用户提供的原始参数：{params}
+后台计算出的结果：{tool_output}
+
+如果不符合上述任何一条规则，请坚决输出 reject，并给出具体的理由。如果符合，输出 pass。
+"""
+        # 调用结构化输出进行反思
+        result: CriticSchema = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+
+        if result.decision == "reject":
+            logger.warning(f"[Critic] 审核被系统驳回: {result.reason}")
+            # 🌟 核心拦截：覆盖原有的数学计算结果，把风控警告传给下游聊天节点
+            new_output = (
+                f"[风控审核不通过] 用户的计算请求不切实际，已被系统拦截。\n"
+                f"原因：{result.reason}。\n"
+                f"指令：请你委婉、礼貌地告知用户该贷款方案无法在银行获批，并给出合理的行业建议（如推荐首付20%以上、最长分60期）。绝对不要向用户展示刚才异常的月供数字！"
+            )
+            return {"tool_output": new_output, "evaluation_result": "reject", "step_count": 1}
+
+        logger.info("[Critic] 审核通过，参数合理")
+        return {"evaluation_result": "pass", "step_count": 1}
+
+    except Exception as e:
+        logger.error(f"[Node: calculate_critic] Critic error: {e}", exc_info=True)
+        # 降级策略：审核器挂了，默认放行
+        return {"evaluation_result": "pass", "step_count": 1}

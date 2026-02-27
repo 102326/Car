@@ -5,9 +5,9 @@ This module defines the core state container (AgentState) that flows through
 the LangGraph nodes during the car shopping assistant's reasoning process.
 """
 
-import operator
+import copy
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
-
+import operator
 from langchain_core.messages import BaseMessage
 
 
@@ -17,27 +17,25 @@ from langchain_core.messages import BaseMessage
 
 def merge_dicts(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Merge two dictionaries with right-side priority.
-    
-    Used as a reducer for user_profile to accumulate user preferences
-    across multiple conversation turns without losing prior information.
-    
-    Args:
-        left: The existing dictionary (previous state).
-        right: The new dictionary (update to merge).
-        
-    Returns:
-        A new dictionary with merged contents.
-        
-    Example:
-        >>> merge_dicts({"budget": 100000}, {"brand": "BMW"})
-        {"budget": 100000, "brand": "BMW"}
+    深度合并两个字典 (Deep Merge)。
+    用于完美保存用户的嵌套偏好，防止后续意图覆盖历史记忆。
     """
-    if left is None:
-        left = {}
-    if right is None:
-        right = {}
-    return {**left, **right}
+    if not left:
+        return copy.deepcopy(right) if right else {}
+    if not right:
+        return copy.deepcopy(left)
+
+    merged = copy.deepcopy(left)
+    for k, v in right.items():
+        if isinstance(v, dict) and k in merged and isinstance(merged[k], dict):
+            # 递归深度合并
+            merged[k] = merge_dicts(merged[k], v)
+        elif isinstance(v, list) and k in merged and isinstance(merged[k], list):
+            # 列表去重合并
+            merged[k] = list(set(merged[k] + v))
+        else:
+            merged[k] = v
+    return merged
 
 
 def increment_count(left: int, right: int) -> int:
