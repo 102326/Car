@@ -75,30 +75,45 @@ async def extract_profile(state: AgentState) -> Dict[str, Any]:
     logger.info("[Node: extract_profile] Checking for profile updates...")
     user_id = state.get("user_id")
     messages = state.get("messages", [])
-    
+
     if not user_id or not messages or not isinstance(messages[-1], HumanMessage):
         return {}
-        
+
     try:
         llm = LLMFactory.get_llm(temperature=0.0)
-        # 💡 核心魔法：让 LLM 直接输出 ProfileUpdateResult 对象！
         structured_llm = llm.with_structured_output(ProfileUpdateResult, method="function_calling")
-        
+
         prompt = PromptTemplate.from_template(
             PROFILE_EXTRACTION_PROMPT + "\n用户最新消息: {message}"
         )
         chain = prompt | structured_llm
-        
-        # 返回的直接是 Pydantic 对象，无需再做 JSON 解析！
+
         result: ProfileUpdateResult = await chain.ainvoke({"message": messages[-1].content})
-        
+
         if result.has_changed:
             logger.info(f"[Node: extract_profile] Extracted changes: {result.model_dump()}")
+            # 1. 持久化到数据库
             await update_user_profile_partial(str(user_id), result)
-            
+
+            # 🌟 2. 核心补丁：按照新的结构，把数据送给 LangGraph 的神级 Reducer！
+            profile_update = {}
+            if result.tags_to_add or result.tags_to_remove:
+                profile_update["preference_tags"] = {
+                    "_add": result.tags_to_add or [],
+                    "_remove": result.tags_to_remove or []
+                }
+            if result.new_budget_min is not None:
+                profile_update["budget_min"] = result.new_budget_min
+            if result.new_budget_max is not None:
+                profile_update["budget_max"] = result.new_budget_max
+            if result.new_brand is not None:
+                profile_update["preference_brand"] = result.new_brand
+
+            return {"user_profile": profile_update, "step_count": 1}
+
     except Exception as e:
         logger.error(f"[Node: extract_profile] Error: {e}")
-        
+
     return {}
 
 
