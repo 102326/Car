@@ -20,6 +20,7 @@ from app.core.database import AsyncSessionLocal
 from app.core.redis import pool as redis_pool
 from app.models.agent_memory import AgentMemoryProfile
 from app.schemas.profile import ProfileUpdateResult
+from app.workflows.state import apply_read_time_decay
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ async def get_user_profile(user_id: str) -> Dict[str, Any]:
     """
     if not user_id:
         return {}
-    
+
     redis_key = _redis_key(user_id)
     
     # ========================================
@@ -115,6 +116,8 @@ async def get_user_profile(user_id: str) -> Dict[str, Any]:
     # Step 3: Cache Backfill (Best Effort)
     # ========================================
     if profile_data:
+        # 🌟 无论哪层加载，第一时间执行“岁月冲刷”
+        profile_data = apply_read_time_decay(profile_data)
         try:
             redis_client = await _get_redis_client()
             await redis_client.setex(

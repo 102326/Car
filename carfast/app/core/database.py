@@ -15,15 +15,13 @@ from app.config import settings
 # ==========================================
 engine = create_async_engine(
     settings.DB_URL,
-    echo=True,  # 开发环境可设为 True 查看 SQL
-    future=True,
-    pool_pre_ping=True,  # 自动检测断开的连接
-    poolclass=NullPool,  # 或使用默认连接池
+    echo=False, # 开发环境可设为 True 查看 SQL
+    pool_size=20,
+    max_overflow=10,
+    pool_recycle=3600,
     connect_args={
-        "server_settings": {
-            # PostgreSQL 模式搜索路径
-            "search_path": "car"
-        }
+        "isolation_level": "AUTOCOMMIT",
+        "server_settings": {"search_path": "car"} # PostgreSQL 模式搜索路径
     }
 )
 

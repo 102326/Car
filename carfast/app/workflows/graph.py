@@ -8,7 +8,7 @@ LangGraph 工作流定义文件 (CarFast Agent)
 
 import logging
 from typing import Any, Dict, Literal
-
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END, START
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, BaseMessage
 
@@ -106,21 +106,24 @@ async def rewrite_query(messages: list[BaseMessage]) -> str:
         logger.error(f"[Query Rewrite] 重写失败，降级返回原句: {e}")
         return last_msg
 
+
 # ============================================================================
 # 聊天生成节点 (Generator Node)
 # ============================================================================
 @async_time_it
-async def chat_generator(state: AgentState) -> Dict[str, Any]:
+# 🌟 修改 1：在参数中增加 config: RunnableConfig，接收外层传进来的流式回调钩子
+async def chat_generator(state: AgentState, config: RunnableConfig) -> Dict[str, Any]:
     logger.info("[Node: chat_generator] Generating response...")
 
     try:
-        llm = LLMFactory.get_llm(temperature=0.3, streaming=False)
+        # 🌟 修改 2：务必将 streaming 改为 True，让底层模型开启打字机模式
+        llm = LLMFactory.get_llm(temperature=0.3, streaming=True)
 
         messages = state.get("messages", [])
         tool_output = state.get("tool_output")
         intent = state.get("intent")
 
-        # 🌟 获取风控审核结果
+        # 获取风控审核结果
         critic_decision = state.get("critic_decision")
         critic_reason = state.get("critic_reason")
 
@@ -146,10 +149,9 @@ async def chat_generator(state: AgentState) -> Dict[str, Any]:
             llm_messages.append(msg)
 
         # ==========================================
-        # 🌟 核心分发：依据风控决策来决定喂给大模型什么数据
+        # 核心分发：依据风控决策来决定喂给大模型什么数据
         # ==========================================
         if critic_decision == "reject":
-            # 如果被风控拦截：强制大模型当坏人，向用户解释原因，并且绝不展示算出来的月供
             llm_messages.append(SystemMessage(
                 content=f"## 🛑 风控审核拦截通知\n"
                         f"用户的购车/贷款方案请求已被金融风控系统拦截！\n"
@@ -157,7 +159,6 @@ async def chat_generator(state: AgentState) -> Dict[str, Any]:
                         f"【系统强制指令】：请你委婉、礼貌地告知用户该方案无法在现实中获批，并结合拦截原因给出合理的行业建议（例如推荐首付20%以上）。**绝对不要**向用户展示任何系统底层计算出的月供数字，因为该方案本身无效！"
             ))
         elif tool_output:
-            # 如果没有被拦截（或者压根没走到风控），正常展示工具输出
             context_title = "车辆库存搜索结果" if intent == "search" else "系统工具与计算结果"
             llm_messages.append(SystemMessage(
                 content=f"## {context_title}\n{tool_output}"
@@ -168,8 +169,12 @@ async def chat_generator(state: AgentState) -> Dict[str, Any]:
                 content=f"## 行业知识参考 (政策/评测)\n请结合以下最新信息回答：\n{knowledge_context}"
             ))
 
-        # 调用大模型生成最终话术
-        response = await llm.ainvoke(llm_messages)
+        # ==========================================
+        # 🌟 修改 3：极其核心的接力！把 config 传给 ainvoke。
+        # 这样大模型每吐出一个字，都会顺着 config 流向前端，而不是憋在内存里等 30 秒！
+        # ==========================================
+        response = await llm.ainvoke(llm_messages, config=config)
+
         ai_message = AIMessage(content=response.content)
 
         return {"messages": [ai_message], "step_count": 1}

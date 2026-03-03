@@ -7,13 +7,13 @@ import logging
 import time
 import hashlib
 import json
+import asyncio
 from typing import Any, Dict, List, Optional, Union
-
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse  # 🌟 新增：引入流式响应
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 import redis.asyncio as redis
-# 🌟 引入 LangChain 官方的 Token 追踪回调
 from langchain_community.callbacks.manager import get_openai_callback
 
 from app.workflows.graph import app_graph
@@ -21,7 +21,6 @@ from app.core.redis import pool
 from app.utils.trace import get_trace_id
 from app.workflows.state import apply_read_time_decay
 from app.services.memory_service import get_user_profile, update_user_profile
-
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,134 +40,102 @@ class ChatResponse(BaseModel):
     elapsed_ms: int = Field(..., description="处理耗时（毫秒）")
 
 # ============================================================================
-# Helper Functions
-# ============================================================================
-
-def extract_last_ai_message(messages: List[BaseMessage]) -> str:
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage):
-            return msg.content
-    return "[Agent 未生成回复]"
-
-# ============================================================================
 # Endpoints
 # ============================================================================
 
-@router.post("/chat", response_model=ChatResponse, summary="与 Agent 对话")
-async def chat_with_agent(req: ChatRequest) -> ChatResponse:
+# 🌟 新增：将普通字符串包装为标准 SSE 格式
+def format_sse(data: str) -> str:
+    """包装为 Server-Sent Events 格式"""
+    # 确保内容中的换行不会破坏 SSE 格式
+    formatted_data = data.replace('\n', '\\n')
+    return f"data: {formatted_data}\n\n"
+
+
+@router.post("/chat", summary="与 Agent 对话 (Streaming)")
+async def chat_with_agent(req: ChatRequest):
     start_time = time.time()
     trace_id = get_trace_id()
 
     logger.info(f"[API: /chat] [{trace_id}] Received message from user={req.user_id}: {req.message[:50]}...")
 
-    try:
-        redis_client = redis.Redis(connection_pool=pool)
+    redis_client = redis.Redis(connection_pool=pool)
+    msg_hash = hashlib.md5(req.message.encode('utf-8')).hexdigest()
+    cache_key = f"carfast:agent:cache:{req.user_id}:{msg_hash}"
 
-        # 1. 生成唯一的 Cache Key (组合 user_id 和 消息内容的 MD5 哈希)
-        msg_hash = hashlib.md5(req.message.encode('utf-8')).hexdigest()
-        cache_key = f"carfast:agent:cache:{req.user_id}:{msg_hash}"
+    # ==========================================
+    # 🌟 统一为单一的流式生成器函数
+    # ==========================================
+    async def response_generator():
+        try:
+            # 1. 处理缓存命中场景 (模拟快速的流式输出)
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
+                logger.info(f"[API: /chat] [{trace_id}] 🎯 Redis Cache Hit! 命中语义缓存。")
+                resp_dict = json.loads(cached_data)
 
-        # 2. 尝试拦截：查询 Redis 缓存
-        cached_data = await redis_client.get(cache_key)
-        if cached_data:
-            logger.info(f"[API: /chat] [{trace_id}] 🎯 Redis Cache Hit! 命中语义缓存，大模型零消耗。")
-            resp_dict = json.loads(cached_data)
+                # 哪怕是缓存，也要伪装成打字机效果吐给前端，保持接口一致性
+                cached_text = resp_dict.get("response", "")
+                chunk_size = 5  # 每次吐 5 个字
+                for i in range(0, len(cached_text), chunk_size):
+                    chunk = cached_text[i:i + chunk_size]
+                    yield format_sse(chunk)
+                    await asyncio.sleep(0.01)  # 增加微小延迟，增强打字机体感
 
-            elapsed_ms = int((time.time() - start_time) * 1000)
-            return ChatResponse(
-                response=resp_dict["response"],
-                steps=0,
-                intent=resp_dict.get("intent", "cache_hit"),
-                elapsed_ms=elapsed_ms
-            )
+                yield format_sse("[DONE]")
+                return
 
-        # 3. 缓存未命中，组装初始状态，进入 LangGraph 运转
-        # ==========================================
-        # 🌟 真实业务环境：从数据库加载并触发"读时衰减"
-        # ==========================================
-        current_profile = {}
-        if req.user_id:
-            # ✅ 调用 get_user_profile，它返回的是一个字典
-            db_memory_dict = await get_user_profile(str(req.user_id))
+            # 2. 缓存未命中，走大模型正常流程
+            current_profile = {}
+            if req.user_id:
+                db_memory_dict = await get_user_profile(str(req.user_id))
+                if db_memory_dict:
+                    current_profile = {
+                        "preference_tags": db_memory_dict.get("preference_tags") or [],
+                        "preference_brand": db_memory_dict.get("preference_brand"),
+                        "budget_min": db_memory_dict.get("budget_min"),
+                        "budget_max": db_memory_dict.get("budget_max"),
+                    }
+                    extra_data = db_memory_dict.get("extra_data") or {}
+                    if isinstance(extra_data, dict) and "_meta" in extra_data:
+                        current_profile["_meta"] = extra_data["_meta"]
+                    current_profile = apply_read_time_decay(current_profile)
 
-            if db_memory_dict:
-                current_profile = {
-                    "preference_tags": db_memory_dict.get("preference_tags") or [],
-                    "preference_brand": db_memory_dict.get("preference_brand"),
-                    "budget_min": db_memory_dict.get("budget_min"),
-                    "budget_max": db_memory_dict.get("budget_max"),
-                }
-                # 提取权重的隐藏元数据 (Meta)
-                extra_data = db_memory_dict.get("extra_data") or {}
-                if isinstance(extra_data, dict) and "_meta" in extra_data:
-                    current_profile["_meta"] = extra_data["_meta"]
+            initial_state = {
+                "messages": [HumanMessage(content=req.message)],
+                "user_id": req.user_id,
+                "user_profile": current_profile,
+                "step_count": 0
+            }
 
-                # 🚀 触发工业级读时衰减 (Read-time Decay)
-                current_profile = apply_read_time_decay(current_profile)
+            full_response_text = ""
 
-        initial_state = {
-            "messages": [HumanMessage(content=req.message)],
-            "user_id": req.user_id,
-            "user_profile": current_profile,  # 传入经过岁月冲刷的最新画像
-            "step_count": 0
-        }
+            with get_openai_callback() as cb:
+                async for event in app_graph.astream(
+                        initial_state,
+                        config={"configurable": {"thread_id": trace_id}},
+                        stream_mode="messages"
+                ):
+                    chunk, metadata = event
+                    if metadata.get("langgraph_node") == "chat_generator":
+                        if hasattr(chunk, "content") and chunk.content:
+                            # 🌟 以标准 SSE 格式吐出实时的字块
+                            yield format_sse(chunk.content)
+                            full_response_text += chunk.content
 
-        # 🌟 核心修改：使用 Token 回调管理器包裹整个图的执行过程
-        with get_openai_callback() as cb:
-            result = await app_graph.ainvoke(initial_state)
+                logger.info(f"[{trace_id}] 💰 流式账单结算: Total={cb.total_tokens} tokens")
 
-            # 自定义计算预估成本 (假设按目前主流国产大模型定价：输入约1元/百万Token，输出约2元/百万Token)
-            estimated_cost = (cb.prompt_tokens * 1.0 + cb.completion_tokens * 2.0) / 1000000
+            # 将完整结果写入缓存
+            if full_response_text:
+                cache_payload = {"response": full_response_text, "intent": "chat"}
+                await redis_client.setex(cache_key, 43200, json.dumps(cache_payload, ensure_ascii=False))
 
-            logger.info(
-                f"[API: /chat] [{trace_id}] 💰 算力账单: "
-                f"Prompt={cb.prompt_tokens} | Completion={cb.completion_tokens} | "
-                f"Total={cb.total_tokens} | 预估成本: ¥{estimated_cost:.6f}"
-            )
+            # 发送结束标识
+            yield format_sse("[DONE]")
 
-            # 提取图运转后的最终数据
-            final_messages = result.get("messages", [])
-            response_text = extract_last_ai_message(final_messages)
-            step_count = result.get("step_count", 0)
-            intent = result.get("intent")
+        except Exception as e:
+            logger.error(f"[API: /chat] [{trace_id}] Stream Error: {e}", exc_info=True)
+            yield format_sse(f"\n[系统异常]: {str(e)}")
+            yield format_sse("[DONE]")
 
-            # ==========================================
-            # 🌟 核心补丁：持久化记忆元数据 (Meta)
-            # 把 LangGraph 算好的最新衰减权重，存回数据库的 extra_data 字段
-            # ==========================================
-            final_profile = result.get("user_profile", {})
-            if req.user_id and "_meta" in final_profile:
-                await update_user_profile(
-                    user_id=str(req.user_id),
-                    data={"extra_data": {"_meta": final_profile["_meta"]}}
-                )
-                logger.info(f"[API: /chat] [{trace_id}] 🧠 用户潜意识(Meta)已持久化到数据库。")
-
-        # 4. 异步将昂贵的大模型结果写入缓存 (设置 12 小时自动过期 TTL)
-        cache_payload = {
-            "response": response_text,
-            "intent": intent
-        }
-        await redis_client.setex(cache_key, 43200, json.dumps(cache_payload, ensure_ascii=False))
-
-        elapsed_ms = int((time.time() - start_time) * 1000)
-        logger.info(
-            f"[API: /chat] [{trace_id}] Completed | intent={intent} | steps={step_count} | "
-            f"elapsed={elapsed_ms}ms | response_len={len(response_text)}"
-        )
-
-        return ChatResponse(
-            response=response_text,
-            steps=step_count,
-            intent=intent,
-            elapsed_ms=elapsed_ms
-        )
-
-    except Exception as e:
-        elapsed_ms = int((time.time() - start_time) * 1000)
-        logger.error(f"[API: /chat] [{trace_id}] Error after {elapsed_ms}ms: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Agent 执行失败: {str(e)}")
-
-@router.get("/health", summary="Agent 健康检查")
-async def agent_health() -> Dict[str, Any]:
-    return {"status": "healthy", "agent": "CarFast LangGraph Agent", "version": "1.0.0"}
+    # 🌟 强制使用 text/event-stream
+    return StreamingResponse(response_generator(), media_type="text/event-stream")

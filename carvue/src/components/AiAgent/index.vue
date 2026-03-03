@@ -3,7 +3,7 @@ import { ref, nextTick, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import MarkdownIt from 'markdown-it'
-import { sendAgentMessage } from '@/api/agent'
+import { sendAgentMessageStream } from '@/api/agent'
 import { getUserInfo } from '@/api/auth'
 import type { AgentChatResponse } from '@/api/agent'
 
@@ -94,30 +94,40 @@ const sendMessage = async () => {
   inputText.value = ''
   scrollToBottom()
 
-  // 2. 开始加载状态
+  // 2. 开启“思考中”加载状态
   isTyping.value = true
 
+  // 🌟 3. 预先推入空的 AI 消息，并记录它的数组索引！
+  messages.value.push({
+    role: 'ai',
+    content: '',
+    isError: false
+  })
+  // 拿到刚才推进去的那个气泡在数组里的真实下标
+  const currentAiIndex = messages.value.length - 1
+
   try {
-    // 3. 调用后端 Agent API (带用户ID)
-    const response: AgentChatResponse = await sendAgentMessage({
+    // 4. 调用流式 API
+    await sendAgentMessageStream({
       message: text,
       user_id: currentUser.value?.id
-    })
-
-    // 4. 将 Agent 回复追加到消息列表
-    messages.value.push({
-      role: 'ai',
-      content: response.response,
-      steps: response.steps,
-      intent: response.intent,
-      elapsed_ms: response.elapsed_ms
+    }, (chunk) => {
+      // 只要拿到了第一个字，立刻把外层的“思考中”关掉
+      if (isTyping.value) {
+        isTyping.value = false
+      }
+      
+      // 🌟 核心修复：直接操作 messages.value 里的 Proxy 对象，触发 Vue 实时渲染！
+      messages.value[currentAiIndex].content += chunk
+      
+      // 保证滚动条始终咬在最底部
+      scrollToBottom()
     })
 
   } catch (error: any) {
-    console.error('Agent API Error:', error)
+    console.error('Agent Stream Error:', error)
     
-    // 处理认证错误
-    if (error.response?.status === 401) {
+    if (error.message === '401') {
       showToast('登录已过期，请重新登录')
       localStorage.removeItem('token')
       router.push('/login')
@@ -125,14 +135,13 @@ const sendMessage = async () => {
       return
     }
     
-    // 显示错误消息
-    const errorMsg = error.response?.data?.detail || error.message || '请求失败，请稍后重试'
-    messages.value.push({
-      role: 'ai',
-      content: `抱歉，发生了错误：${errorMsg}`,
-      isError: true
-    })
+    // 报错处理也要用索引去改
+    if (!messages.value[currentAiIndex].content) {
+        messages.value[currentAiIndex].content = '抱歉，网络连接异常，未能获取到顾问建议。'
+        messages.value[currentAiIndex].isError = true
+    }
     showToast('Agent 请求失败')
+    
   } finally {
     isTyping.value = false
     nextTick(scrollToBottom)
