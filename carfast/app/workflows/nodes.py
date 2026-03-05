@@ -12,6 +12,9 @@ from app.utils.llm_factory import LLMFactory
 from app.services.memory_service import get_user_profile_summary, update_user_profile_partial
 from app.schemas.profile import ProfileUpdateResult
 from app.utils.decorators import async_time_it
+import json
+import os
+from app.services.mcp_client import CarFastMCPClient
 
 logger = logging.getLogger(__name__)
 
@@ -198,52 +201,61 @@ async def execute_search(state: AgentState) -> Dict[str, Any]:
 
 @async_time_it
 async def calculate_executor(state: AgentState) -> Dict[str, Any]:
-    """执行真实的金融车贷计算（等额本息）"""
-    logger.info("[Node: calculate_executor] Starting financial calculation...")
+    logger.info("[Node: calculate_executor] 正在通过 MCP 协议调用外部金融引擎...")
+
+    intent = state.get("intent")
+    # 假设你之前已经把参数提取到这儿了，或者写死几个参数测试
+    params = state.get("calculate_params", {})
+
+    # 获取测试参数（你可以根据实际情况从 params 里取，这里为了演示 MCP 连通性给个默认值）
+    principal = params.get("principal", 200000)
+    months = params.get("months", 36)
+    annual_rate = params.get("annual_rate", 0.05)
+
+    # 🌟 核心重构：MCP 跨进程远程调用 🌟
+    # 找到 finance_server.py 的绝对或相对路径
+    server_path = os.path.join(os.getcwd(), "mcp_servers", "finance_server.py")
+
+    mcp_client = CarFastMCPClient(server_path)
+    tool_output_str = ""
+
     try:
-        params = state.get("calculate_params") or {}
-        total_price = params.get("total_price")
+        # 1. 连接 MCP Server
+        await mcp_client.connect()
 
-        # 兜底：如果用户没提总价，无法计算
-        if not total_price:
-            return {"tool_output": "[系统提示] 无法计算，因为用户未提供车辆总价。请询问用户想要计算的具体车价。"}
-
-        # 设置默认值（业界常规标准：首付3成，分36期，年化4.5%）
-        down_payment_rate = params.get("down_payment_rate") or 0.3
-        loan_term = params.get("loan_term") or 36
-        annual_rate = params.get("annual_rate") or 0.045
-
-        # 数学计算：等额本息公式
-        principal = total_price * 10000 * (1 - down_payment_rate)  # 贷款本金(元)
-        monthly_rate = annual_rate / 12  # 月利率
-
-        if monthly_rate > 0:
-            monthly_payment = principal * (monthly_rate * (1 + monthly_rate) ** loan_term) / (
-                        (1 + monthly_rate) ** loan_term - 1)
-        else:
-            monthly_payment = principal / loan_term
-
-        total_interest = monthly_payment * loan_term - principal
-
-        # 组装精确的格式化输出结果交给大模型
-        result_str = (
-            f"【后台车贷系统计算结果 (等额本息)】\n"
-            f"- 车辆总价：{total_price} 万元\n"
-            f"- 首付比例：{down_payment_rate * 100}% \n"
-            f"- 首付金额：{total_price * down_payment_rate:.2f} 万元\n"
-            f"- 贷款本金：{principal / 10000:.2f} 万元\n"
-            f"- 贷款期限：{loan_term} 期 (月)\n"
-            f"- 年化利率：{annual_rate * 100}%\n"
-            f"- 每月月供：{monthly_payment:.2f} 元\n"
-            f"- 总利息：{total_interest:.2f} 元\n\n"
-            f"系统要求：请以专业的销售口吻将上述计算结果告知用户，不需要解释数学公式，只需报出数据，"
-            f"并友好地提醒用户：具体金融政策与费率请以门店实际审批为准。"
+        # 2. 发起工具调用！这就相当于在进行一次本机的微服务 RPC 通信
+        result_str = await mcp_client.call_tool(
+            name="calculate_car_loan",
+            arguments={
+                "principal": principal,
+                "months": months,
+                "annual_rate": annual_rate
+            }
         )
-        return {"tool_output": result_str, "step_count": 1}
+
+        # 解析返回的 JSON 字符串
+        result_json = json.loads(result_str)
+
+        # 组装给大模型看的最终上下文
+        tool_output_str = (
+            f"✅ [MCP 远程调用成功]\n"
+            f"- 贷款本金: {principal} 元\n"
+            f"- 分期期数: {months} 个月\n"
+            f"- 年化利率: {annual_rate * 100}%\n"
+            f"💰 每月等额本息月供: **{result_json['monthly_payment']} 元**\n"
+            f"📊 总利息: {result_json['total_interest']} 元\n"
+        )
 
     except Exception as e:
-        logger.error(f"[Node: calculate_executor] Error: {e}", exc_info=True)
-        return {"tool_output": f"[计算执行失败] 无法完成计算，请稍后重试。({str(e)})", "step_count": 1}
+        logger.error(f"[MCP 调用异常] {e}", exc_info=True)
+        tool_output_str = f"❌ [金融服务引擎调用失败]: {str(e)}"
+
+    finally:
+        # 3. 务必断开连接，释放子进程资源
+        await mcp_client.close()
+
+    # 将外部微服务的计算结果，塞回 LangGraph 的状态中
+    return {"tool_output": tool_output_str, "step_count": 1}
 
 
 @async_time_it
