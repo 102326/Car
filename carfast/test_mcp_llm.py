@@ -1,5 +1,7 @@
 import asyncio
 import os
+from dotenv import load_dotenv
+load_dotenv()
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import ToolMessage  # 🌟 必须导入这个，用于存放工具的执行结果
 from app.services.mcp_manager import MCPManager

@@ -4,7 +4,7 @@ from celery.signals import worker_ready
 
 # 读取配置 (注意: Celery 是独立进程, 必须确保能读到环境变量)
 # 建议在 main.py 或 worker 入口加载 .env, 或者依赖 docker 的 env
-broker_url = os.getenv("CELERY_BROKER_URL", "amqp://guest:guest@localhost:5672/")
+broker_url = os.getenv("CELERY_BROKER_URL", "amqp://user:password@localhost:5672/")
 result_backend = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
 
 
